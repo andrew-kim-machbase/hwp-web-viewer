@@ -79,6 +79,7 @@ async function ensureDevServer(url) {
   const proc = spawn("npm", ["run", "dev", "--", "--host", host, "--port", port], {
     stdio: ["ignore", "pipe", "pipe"],
     env: process.env,
+    detached: true,
   });
   proc.stdout.on("data", (chunk) => process.stdout.write(`[vite] ${chunk}`));
   proc.stderr.on("data", (chunk) => process.stderr.write(`[vite] ${chunk}`));
@@ -89,6 +90,21 @@ async function ensureDevServer(url) {
     throw new Error(`Dev server did not become ready: ${url}`);
   }
   return { proc, owned: true };
+}
+
+function stopDevServer(server) {
+  if (!server?.owned || !server.proc) {
+    return;
+  }
+  try {
+    process.kill(-server.proc.pid, "SIGTERM");
+  } catch {
+    try {
+      server.proc.kill("SIGTERM");
+    } catch {
+      // ignore
+    }
+  }
 }
 
 function ensureDir(dirPath) {
@@ -188,9 +204,7 @@ async function main() {
     console.table(summary);
   } finally {
     await browser.close();
-    if (server.owned && server.proc) {
-      server.proc.kill("SIGTERM");
-    }
+    stopDevServer(server);
   }
 }
 
