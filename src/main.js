@@ -2,6 +2,10 @@ import * as CFB from "cfb";
 import { inflate, inflateRaw } from "pako";
 import CryptoJS from "crypto-js";
 import "./styles.css";
+import { toUint8Array, decodeUtf8Sample, extractReadableAscii, bytesToAscii } from "./utils/bytes.js";
+import { formatHex, formatBytes } from "./utils/format.js";
+import { clamp, hwpToPx, hwpToMm, toFlagBits } from "./utils/numeric.js";
+import { escapeHtml, escapeHtmlAttr } from "./utils/html.js";
 
 const RECORD_TAGS = {
   16: "HWPTAG_DOCUMENT_PROPERTIES",
@@ -7064,119 +7068,4 @@ function isLikelyRecordStream(path) {
 
 function mayBeCompressedRecordStream(path) {
   return /\/DocInfo$|\/BodyText\/Section\d+$|\/ViewText\/Section\d+$/.test(path);
-}
-
-function toUint8Array(value) {
-  if (!value) {
-    return new Uint8Array();
-  }
-  if (value instanceof Uint8Array) {
-    return value;
-  }
-  return new Uint8Array(value);
-}
-
-function decodeUtf8Sample(bytes, maxBytes = 262144) {
-  try {
-    const decoder = new TextDecoder("utf-8", { fatal: false });
-    return decoder.decode(bytes.subarray(0, Math.min(bytes.length, maxBytes)));
-  } catch {
-    return "";
-  }
-}
-
-function extractReadableAscii(bytes, maxChars = 120) {
-  if (!bytes?.length) {
-    return "";
-  }
-  const chars = [];
-  for (let i = 0; i < bytes.length && chars.length < maxChars; i += 1) {
-    const value = bytes[i];
-    if (value === 0x09 || value === 0x0a || value === 0x0d || (value >= 0x20 && value <= 0x7e)) {
-      chars.push(String.fromCharCode(value));
-    }
-  }
-  return chars.join("").replace(/\s+/g, " ").trim();
-}
-
-function formatHex(bytes, base = 0, limit = 1024) {
-  const len = Math.min(bytes.length, limit);
-  const rows = [];
-
-  for (let i = 0; i < len; i += 16) {
-    const slice = bytes.subarray(i, i + 16);
-    const hexPart = Array.from(slice)
-      .map((byte) => byte.toString(16).padStart(2, "0"))
-      .join(" ")
-      .padEnd(16 * 3 - 1, " ");
-
-    const asciiPart = Array.from(slice)
-      .map((byte) => (byte >= 32 && byte <= 126 ? String.fromCharCode(byte) : "."))
-      .join("");
-
-    rows.push(`${(base + i).toString(16).padStart(8, "0")}  ${hexPart}  ${asciiPart}`);
-  }
-
-  if (bytes.length > limit) {
-    rows.push(`... ${bytes.length - limit} more bytes omitted ...`);
-  }
-
-  return rows.join("\n");
-}
-
-function formatBytes(size) {
-  if (size < 1024) {
-    return `${size} B`;
-  }
-  if (size < 1024 * 1024) {
-    return `${(size / 1024).toFixed(1)} KB`;
-  }
-  return `${(size / (1024 * 1024)).toFixed(2)} MB`;
-}
-
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
-function hwpToPx(value) {
-  if (!Number.isFinite(value)) {
-    return 0;
-  }
-  return value / 80;
-}
-
-function hwpToMm(value) {
-  if (!Number.isFinite(value)) {
-    return 0;
-  }
-  return value * (25.4 / 7200);
-}
-
-function toFlagBits(flags) {
-  const bits = [];
-  for (let i = 0; i < 32; i += 1) {
-    if (flags & (1 << i)) {
-      bits.push(i);
-    }
-  }
-  return bits.join(", ");
-}
-
-function bytesToAscii(bytes) {
-  return Array.from(bytes)
-    .map((value) => String.fromCharCode(value))
-    .join("");
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
-function escapeHtmlAttr(value) {
-  return escapeHtml(value);
 }
