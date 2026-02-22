@@ -1,0 +1,22 @@
+{
+  "name": "hwpv",
+  "version": "1.0.0",
+  "description": "Raw HWP format viewer MVP",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "cfb": "^1.2.2",
+    "crypto-js": "^4.2.0",
+    "pako": "^2.1.0"
+  },
+  "devDependencies": {
+    "playwright": "^1.58.2",
+    "vite": "^7.3.1"
+  }
+}
