@@ -88,6 +88,7 @@ const PARAGRAPH_BLOCK_MIN_PX = 14;
 const TABLE_CHUNK_BASE_PX = 10;
 const TABLE_ROW_FALLBACK_PX = 22;
 const TABLE_ROW_MIN_PX = 9;
+const TEXT_PAGINATION_SCALE = 1.08;
 
 const SCRIPT_LANGS = ["ko", "en", "hanja", "jp", "other", "symbol", "user"];
 const UTF16LE_DECODER = new TextDecoder("utf-16le");
@@ -1924,7 +1925,7 @@ function buildPreviewPagesWithOverflow(paragraphs, pageLayout) {
   if (!basePages.length) {
     return [];
   }
-  const contentHeightPx = resolvePageContentHeightPx(pageLayout);
+  const contentHeightPx = resolvePageContentHeightPx(pageLayout, paragraphs);
   const paged = [];
   for (const basePage of basePages) {
     const overflowPages = paginatePageParagraphsByHeight(basePage.paragraphs, contentHeightPx);
@@ -1938,14 +1939,47 @@ function buildPreviewPagesWithOverflow(paragraphs, pageLayout) {
   return paged;
 }
 
-function resolvePageContentHeightPx(pageLayout) {
+function resolvePageContentHeightPx(pageLayout, paragraphs = []) {
+  const tableRatio = estimateTableParagraphRatio(paragraphs);
+  const tableDensityScale = computeTableDensityPageScale(tableRatio);
+  let base = PAGE_CONTENT_FALLBACK_HEIGHT_PX;
   if (!pageLayout) {
-    return PAGE_CONTENT_FALLBACK_HEIGHT_PX;
+    return clamp(base * tableDensityScale, 320, 3200);
   }
   if (Number.isFinite(pageLayout.paperHeightPx) && Number.isFinite(pageLayout.topPaddingPx) && Number.isFinite(pageLayout.bottomPaddingPx)) {
-    return clamp(pageLayout.paperHeightPx - pageLayout.topPaddingPx - pageLayout.bottomPaddingPx, 320, 3200);
+    base = clamp(pageLayout.paperHeightPx - pageLayout.topPaddingPx - pageLayout.bottomPaddingPx, 320, 3200);
+    return clamp(base * tableDensityScale, 320, 3200);
   }
-  return PAGE_CONTENT_FALLBACK_HEIGHT_PX;
+  return clamp(base * tableDensityScale, 320, 3200);
+}
+
+function estimateTableParagraphRatio(paragraphs) {
+  if (!paragraphs?.length) {
+    return 0;
+  }
+  let total = 0;
+  let withTable = 0;
+  for (const paragraph of paragraphs) {
+    total += 1;
+    if ((paragraph?.controls ?? []).some((control) => Boolean(control?.tableInfo))) {
+      withTable += 1;
+    }
+  }
+  if (!total) {
+    return 0;
+  }
+  return withTable / total;
+}
+
+function computeTableDensityPageScale(tableParagraphRatio) {
+  if (!Number.isFinite(tableParagraphRatio)) {
+    return 1;
+  }
+  const pivot = 0.22;
+  if (tableParagraphRatio >= pivot) {
+    return clamp(1 + (tableParagraphRatio - pivot) * 0.32, 0.96, 1.05);
+  }
+  return clamp(1 - (pivot - tableParagraphRatio) * 0.8, 0.96, 1.05);
 }
 
 function paginatePageParagraphsByHeight(paragraphs, contentHeightPx) {
@@ -2139,7 +2173,7 @@ function estimateParagraphTextHeightPx(paragraph) {
       }
       return sum + 18;
     }, 0);
-    return clamp(linesHeight + spacingBeforePx + spacingAfterPx, 0, 2200);
+    return clamp((linesHeight + spacingBeforePx + spacingAfterPx) * TEXT_PAGINATION_SCALE, 0, 2200);
   }
 
   const text = paragraph?.previewTextNormalized ?? paragraph?.previewText ?? "";
@@ -2153,7 +2187,7 @@ function estimateParagraphTextHeightPx(paragraph) {
   const lineHeightPx = fontPx * ratio;
   const approxCharsPerLine = 38;
   const lineCount = Math.max(1, Math.ceil(text.length / approxCharsPerLine));
-  return clamp(lineCount * lineHeightPx + spacingBeforePx + spacingAfterPx, 0, 2200);
+  return clamp((lineCount * lineHeightPx + spacingBeforePx + spacingAfterPx) * TEXT_PAGINATION_SCALE, 0, 2200);
 }
 
 function estimateControlHeightPx(control) {
@@ -2209,10 +2243,15 @@ function estimateTableRowHeightsPx(tableInfo) {
   }
   const rowHeights = Array.from({ length: rowCount }, () => 0);
   const rowSizes = Array.isArray(tableInfo?.rowSizes) ? tableInfo.rowSizes : [];
+  const sizedRows = rowSizes.reduce((sum, rowSize) => sum + (Number.isFinite(rowSize) && rowSize > 0 ? 1 : 0), 0);
+  const rowSizeCoverage = rowCount > 0 ? sizedRows / rowCount : 0;
+  const rowSizeScale = rowSizeCoverage >= 0.7 ? 0.88 : rowSizeCoverage >= 0.45 ? 0.93 : 1.0;
+  const inferredLinePx = rowSizeCoverage <= 0.25 ? 15.5 : 14.0;
+  const fallbackRowPx = rowSizeCoverage <= 0.25 ? 25 : TABLE_ROW_FALLBACK_PX;
   for (let i = 0; i < rowCount; i += 1) {
     const rowSize = rowSizes[i];
     if (Number.isFinite(rowSize) && rowSize > 0) {
-      rowHeights[i] = Math.max(rowHeights[i], clamp(hwpToPx(rowSize), TABLE_ROW_MIN_PX, 360));
+      rowHeights[i] = Math.max(rowHeights[i], clamp(hwpToPx(rowSize) * rowSizeScale, TABLE_ROW_MIN_PX, 360));
     }
   }
 
@@ -2228,12 +2267,12 @@ function estimateTableRowHeightsPx(tableInfo) {
     let cellHeightPx = Number.isFinite(cell.height) && cell.height > 0 ? hwpToPx(cell.height) : 0;
     if (!(cellHeightPx > 0) && cell.text) {
       const lines = Math.max(1, String(cell.text).split(/\n+/).length);
-      cellHeightPx = lines * 14 + 8;
+      cellHeightPx = lines * inferredLinePx + 8;
     }
     if (!(cellHeightPx > 0)) {
       continue;
     }
-    const perRow = clamp(cellHeightPx / rowSpan, TABLE_ROW_MIN_PX, 320);
+    const perRow = clamp((cellHeightPx / rowSpan) * rowSizeScale, TABLE_ROW_MIN_PX, 320);
     const rowEnd = Math.min(rowCount, cell.row + rowSpan);
     for (let row = cell.row; row < rowEnd; row += 1) {
       rowHeights[row] = Math.max(rowHeights[row], perRow);
@@ -2242,7 +2281,7 @@ function estimateTableRowHeightsPx(tableInfo) {
 
   for (let i = 0; i < rowHeights.length; i += 1) {
     if (!(rowHeights[i] > 0)) {
-      rowHeights[i] = TABLE_ROW_FALLBACK_PX;
+      rowHeights[i] = fallbackRowPx;
     }
   }
 
