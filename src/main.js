@@ -3440,6 +3440,14 @@ function renderGraphicControlPreview(graphicInfo) {
     clamp(hwpToPx(textPadding[2] ?? 0), 0, 120),
     clamp(hwpToPx(textPadding[3] ?? 0), 0, 120),
   ];
+  const wrapRelaxEligible =
+    !hasRenderableMedia &&
+    hasRenderableTextBlocks &&
+    widthPx >= 520 &&
+    textBlocks.length > 0 &&
+    textBlocks.length <= 3 &&
+    textBlocks.some((block) => normalizePreviewText(block?.text ?? "").includes("/"));
+  const textBoxWidthPx = wrapRelaxEligible ? clamp(widthPx * 1.14, widthPx, 680) : widthPx;
   const textVerticalAlign = graphicInfo.textBoxListInfo?.verticalAlignName;
   const textBoxJustify = textVerticalAlign === "middle" ? "center" : textVerticalAlign === "bottom" ? "flex-end" : "flex-start";
   const textBoxMargin =
@@ -3469,7 +3477,9 @@ function renderGraphicControlPreview(graphicInfo) {
         .join("")
     : "";
   const textBoxHtml = hasRenderableTextBlocks
-    ? `<div class="control-object-textbox" style="width:${widthPx.toFixed(1)}px;min-height:${heightPx.toFixed(1)}px;padding:${textPaddingPx[2].toFixed(
+    ? `<div class="control-object-textbox" style="width:${textBoxWidthPx.toFixed(1)}px;min-height:${heightPx.toFixed(
+        1
+      )}px;padding:${textPaddingPx[2].toFixed(
         1
       )}px ${textPaddingPx[1].toFixed(1)}px ${textPaddingPx[3].toFixed(1)}px ${textPaddingPx[0].toFixed(1)}px;justify-content:${textBoxJustify};${textBoxMargin}">
         ${textBlocksHtml}
