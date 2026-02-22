@@ -24,6 +24,13 @@ Run automated preview-vs-PDF comparison (captures preview pages with Playwright 
 npm run diff:preview -- --max-pages 30
 ```
 
+Notes:
+
+- By default, the script does **not** reuse an already-running dev server on the same URL (to avoid stale comparisons).
+- If `http://127.0.0.1:4173` is already in use, either:
+  - pass a different URL, e.g. `--url http://127.0.0.1:4188`, or
+  - explicitly opt in to reuse: `--reuse-server`
+
 Outputs:
 
 - `artifacts/diff/<case>/preview/preview-page-XXX.png`

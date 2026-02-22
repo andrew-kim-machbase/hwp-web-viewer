@@ -18,6 +18,7 @@ function parseArgs(argv) {
     python: ".venv/bin/python",
     cases: DEFAULT_CASES,
     saveRendered: false,
+    reuseServer: false,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -37,6 +38,8 @@ function parseArgs(argv) {
       }
     } else if (token === "--save-rendered") {
       args.saveRendered = true;
+    } else if (token === "--reuse-server") {
+      args.reuseServer = true;
     }
   }
 
@@ -71,12 +74,17 @@ function parseHostPort(url) {
   };
 }
 
-async function ensureDevServer(url) {
+async function ensureDevServer(url, reuseServer = false) {
   if (await isServerReady(url)) {
+    if (!reuseServer) {
+      throw new Error(
+        `Target URL is already serving content: ${url}. Use --reuse-server or pass a different --url to avoid stale comparisons.`
+      );
+    }
     return { proc: null, owned: false };
   }
   const { host, port } = parseHostPort(url);
-  const proc = spawn("npm", ["run", "dev", "--", "--host", host, "--port", port], {
+  const proc = spawn("npm", ["run", "dev", "--", "--host", host, "--port", port, "--strictPort"], {
     stdio: ["ignore", "pipe", "pipe"],
     env: process.env,
     detached: true,
@@ -111,18 +119,78 @@ function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
 }
 
+function resetDir(dirPath) {
+  fs.rmSync(dirPath, { recursive: true, force: true });
+  fs.mkdirSync(dirPath, { recursive: true });
+}
+
+async function waitForStablePreview({ page, selector, pollMs = 300, stablePasses = 8, timeoutMs = 120000 }) {
+  const start = Date.now();
+  let lastCount = -1;
+  let stableCount = 0;
+
+  while (Date.now() - start < timeoutMs) {
+    const count = await page.locator(selector).count();
+    if (count > 0 && count === lastCount) {
+      stableCount += 1;
+      if (stableCount >= stablePasses) {
+        return count;
+      }
+    } else {
+      stableCount = 0;
+      lastCount = count;
+    }
+    await page.waitForTimeout(pollMs);
+  }
+
+  throw new Error(`Preview pages did not stabilize for selector: ${selector}`);
+}
+
+async function waitForLocatorImagesReady(locator, timeoutMs = 8000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    let ready = false;
+    try {
+      ready = await locator.evaluate((element) => {
+        const images = Array.from(element.querySelectorAll("img"));
+        if (!images.length) {
+          return true;
+        }
+        return images.every((image) => image.complete);
+      });
+    } catch {
+      ready = false;
+    }
+    if (ready) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 120));
+  }
+}
+
 async function capturePreviewPages({ page, caseItem, outDir, maxPages }) {
   const hwpPath = path.resolve(caseItem.hwp);
+  resetDir(outDir);
   await page.locator("#fileInput").setInputFiles(hwpPath);
   await page.waitForSelector(".preview-pages .preview-page", { timeout: 120000 });
-  await page.waitForTimeout(1800);
+  await waitForStablePreview({
+    page,
+    selector: ".preview-pages .preview-page",
+    pollMs: 320,
+    stablePasses: 8,
+    timeoutMs: 120000,
+  });
+  await page.waitForTimeout(250);
 
   const pages = page.locator(".preview-pages .preview-page");
   const count = await pages.count();
   const captureCount = Math.min(count, Math.max(1, maxPages));
-  ensureDir(outDir);
   for (let i = 0; i < captureCount; i += 1) {
-    await pages.nth(i).screenshot({
+    const target = pages.nth(i);
+    await target.scrollIntoViewIfNeeded();
+    await page.waitForTimeout(120);
+    await waitForLocatorImagesReady(target, 10000);
+    await target.screenshot({
       path: path.join(outDir, `preview-page-${String(i + 1).padStart(3, "0")}.png`),
     });
   }
@@ -157,7 +225,7 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   ensureDir(args.artifactsDir);
 
-  const server = await ensureDevServer(args.url);
+  const server = await ensureDevServer(args.url, args.reuseServer);
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 1400, height: 2400 } });
 

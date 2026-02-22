@@ -560,10 +560,32 @@ body {
 }
 
 .doc-tab-stop {
-  display: inline-block;
+  display: inline-flex;
   width: 0;
   min-width: 1.8rem;
   vertical-align: baseline;
+  align-items: flex-end;
+  overflow: hidden;
+}
+
+.doc-tab-leader {
+  display: inline-block;
+  width: 100%;
+  align-self: flex-end;
+  border-bottom: 1px dotted rgba(34, 44, 43, 0.45);
+  user-select: none;
+}
+
+.doc-tab-leader-dot {
+  border-bottom-style: dotted;
+}
+
+.doc-tab-leader-dash {
+  border-bottom-style: dashed;
+}
+
+.doc-tab-leader-underline {
+  border-bottom-style: solid;
 }
 
 .preview-text-empty {

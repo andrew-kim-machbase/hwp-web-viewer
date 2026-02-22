@@ -1428,6 +1428,7 @@ function renderPreviewParagraph(item) {
   const textRenderOptions = {
     listMarker: item.listMarker,
     listType: item.listType,
+    tabStops: item.tabStops,
     tabStopsPx: item.tabStopsPx,
     baseStyle: item.style,
   };
@@ -1506,9 +1507,8 @@ function renderPreviewParagraph(item) {
 }
 
 function renderStyledTextRuns(textRuns, options = {}) {
-  const tabStopsPx = [...(options.tabStopsPx ?? [])]
-    .filter((value) => Number.isFinite(value) && value > 0)
-    .sort((a, b) => a - b);
+  const tabStops = normalizeTabStops(options.tabStops, options.tabStopsPx);
+  const tabStopsPx = tabStops.map((tab) => tab.positionPx);
   const baseFontSizePt = clamp(options.baseStyle?.fontSizePt ?? 10, 6, 72);
   const defaultTabPx = estimateDefaultTabWidthPx(baseFontSizePt);
   const out = [];
@@ -1516,8 +1516,10 @@ function renderStyledTextRuns(textRuns, options = {}) {
 
   for (const run of textRuns ?? []) {
     if (run?.tab) {
-      const tabWidth = computeTabAdvancePx(cursorPx, tabStopsPx, defaultTabPx);
-      out.push(`<span class="doc-tab-stop" style="min-width:${tabWidth.toFixed(1)}px"></span>`);
+      const tabInfo = computeNextTabAdvance(cursorPx, tabStops, defaultTabPx);
+      const tabWidth = tabInfo.advancePx;
+      const leaderHtml = buildTabLeaderHtml(tabWidth, baseFontSizePt, tabInfo.stop?.leaderName);
+      out.push(`<span class="doc-tab-stop" style="min-width:${tabWidth.toFixed(1)}px">${leaderHtml}</span>`);
       cursorPx += tabWidth;
       continue;
     }
@@ -1538,6 +1540,67 @@ function renderStyledTextRuns(textRuns, options = {}) {
   }
 
   return out.join("");
+}
+
+function normalizeTabStops(tabStops, tabStopsPx) {
+  if (Array.isArray(tabStops) && tabStops.length) {
+    return tabStops
+      .filter((tab) => Number.isFinite(tab?.positionPx) && tab.positionPx > 0)
+      .map((tab) => ({
+        positionPx: tab.positionPx,
+        alignName: tab.alignName ?? TAB_ALIGN_NAMES[tab.align] ?? "left",
+        leaderName: tab.leaderName ?? TAB_LEADER_NAMES[tab.leader] ?? "none",
+      }))
+      .sort((a, b) => a.positionPx - b.positionPx);
+  }
+  return [...(tabStopsPx ?? [])]
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .sort((a, b) => a - b)
+    .map((positionPx) => ({
+      positionPx,
+      alignName: "left",
+      leaderName: "none",
+    }));
+}
+
+function computeNextTabAdvance(cursorPx, tabStops, defaultTabPx) {
+  for (const tabStop of tabStops) {
+    if (tabStop.positionPx > cursorPx + 0.2) {
+      return {
+        advancePx: clamp(tabStop.positionPx - cursorPx, 8, 420),
+        stop: tabStop,
+      };
+    }
+  }
+  const step = Math.max(8, defaultTabPx);
+  const next = Math.floor(cursorPx / step + 1) * step;
+  return {
+    advancePx: clamp(next - cursorPx, 8, 420),
+    stop: null,
+  };
+}
+
+function buildTabLeaderHtml(tabWidthPx, fontSizePt, leaderName) {
+  const leaderKind = tabLeaderKind(leaderName);
+  if (!leaderKind) {
+    return "";
+  }
+  const fontPx = clamp((fontSizePt * 96) / 72, 8, 120);
+  const heightEm = clamp(fontPx / 18, 0.5, 1.1).toFixed(2);
+  return `<span class="doc-tab-leader doc-tab-leader-${leaderKind}" style="height:${heightEm}em"></span>`;
+}
+
+function tabLeaderKind(leaderName) {
+  if (leaderName === "dot" || leaderName === "middle-dot") {
+    return "dot";
+  }
+  if (leaderName === "hyphen") {
+    return "dash";
+  }
+  if (leaderName === "underline") {
+    return "underline";
+  }
+  return null;
 }
 
 function renderStyledTextLines(textLines, options = {}) {
@@ -2534,6 +2597,7 @@ function buildPreviewModel() {
         listMarker: listContext.marker,
         listType: listContext.type,
         listLevel: listContext.level,
+        tabStops: listContext.tabStops,
         tabStopsPx: listContext.tabStopsPx,
         breakHints,
         controls,
@@ -2593,12 +2657,19 @@ function extractParagraphBreakHints(lineSegments, paraHeader = null) {
 
 function resolveParagraphListContext(paraShape, docInfo, numberingState) {
   const tabDef = paraShape?.tabDefId != null ? docInfo?.tabDefById?.get(paraShape.tabDefId) ?? null : null;
-  const tabStopsPx = tabDef?.tabStops?.length
+  const tabStops = tabDef?.tabStops?.length
     ? tabDef.tabStops
-        .map((tab) => tab.positionPx)
-        .filter((value) => Number.isFinite(value) && value > 0)
-        .sort((a, b) => a - b)
+        .filter((tab) => Number.isFinite(tab?.positionPx) && tab.positionPx > 0)
+        .map((tab) => ({
+          positionPx: tab.positionPx,
+          align: tab.align ?? 0,
+          alignName: tab.alignName ?? TAB_ALIGN_NAMES[tab.align] ?? `align${tab.align ?? 0}`,
+          leader: tab.leader ?? 0,
+          leaderName: tab.leaderName ?? TAB_LEADER_NAMES[tab.leader] ?? `leader${tab.leader ?? 0}`,
+        }))
+        .sort((a, b) => a.positionPx - b.positionPx)
     : [];
+  const tabStopsPx = tabStops.map((tab) => tab.positionPx);
 
   const headingType = paraShape?.property1Bits?.headingType ?? 0;
   const listLevel = clamp(paraShape?.property1Bits?.headingLevel || 1, 1, 7);
@@ -2609,6 +2680,7 @@ function resolveParagraphListContext(paraShape, docInfo, numberingState) {
       type: "number",
       marker,
       level: listLevel,
+      tabStops,
       tabStopsPx,
     };
   }
@@ -2618,6 +2690,7 @@ function resolveParagraphListContext(paraShape, docInfo, numberingState) {
       type: "bullet",
       marker,
       level: listLevel,
+      tabStops,
       tabStopsPx,
     };
   }
@@ -2626,6 +2699,7 @@ function resolveParagraphListContext(paraShape, docInfo, numberingState) {
     type: "",
     marker: null,
     level: null,
+    tabStops,
     tabStopsPx,
   };
 }
@@ -6326,14 +6400,23 @@ function toSignedByte(value) {
 function buildParagraphContext(records) {
   const paragraphs = [];
   const recordToParagraph = new Map();
-  const useTopLevelParagraphs = Boolean(state.doc?.fileHeader?.distributable);
   const paragraphLevels = records.filter((record) => record.tag === 66 && Number.isFinite(record.level)).map((record) => record.level);
   const baseParagraphLevel = paragraphLevels.length ? Math.min(...paragraphLevels) : 0;
   const directChildLevel = baseParagraphLevel + 1;
+  const hasDirectChildRecords = records.some((record) => {
+    if (!Number.isFinite(record.level)) {
+      return false;
+    }
+    if (record.level !== directChildLevel) {
+      return false;
+    }
+    return record.tag === 67 || record.tag === 68 || record.tag === 69 || record.tag === 71;
+  });
+  const contentRecordLevel = hasDirectChildRecords ? directChildLevel : baseParagraphLevel;
   let current = null;
 
   for (const record of records) {
-    if (record.tag === 66 && (!useTopLevelParagraphs || record.level === baseParagraphLevel)) {
+    if (record.tag === 66 && record.level === baseParagraphLevel) {
       current = {
         index: paragraphs.length,
         headerRecord: record,
@@ -6353,7 +6436,7 @@ function buildParagraphContext(records) {
     current.records.push(record);
     recordToParagraph.set(record.index, current.index);
 
-    if (useTopLevelParagraphs && record.level !== directChildLevel) {
+    if (record.level !== contentRecordLevel) {
       continue;
     }
 
