@@ -1,7 +1,7 @@
-import { inflate, inflateRaw } from "pako";
 import CryptoJS from "crypto-js";
 import "./styles.css";
 import { toUint8Array, extractReadableAscii, bytesToAscii } from "./utils/bytes.js";
+import { safeInflate } from "./utils/compression.js";
 import { formatHex, formatBytes } from "./utils/format.js";
 import { clamp, hwpToPx, hwpToMm } from "./utils/numeric.js";
 import { escapeHtml, escapeHtmlAttr } from "./utils/html.js";
@@ -6430,12 +6430,4 @@ function streamParseNote(stream, analysis) {
   }
 
   return notes.join("\n");
-}
-
-function safeInflate(bytes, rawMode) {
-  try {
-    return rawMode ? inflateRaw(bytes) : inflate(bytes);
-  } catch {
-    return null;
-  }
 }
