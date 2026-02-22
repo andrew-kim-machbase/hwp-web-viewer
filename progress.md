@@ -65,15 +65,55 @@
 - `main.js` 크기 축소 진행 중: 7182 -> 5753 lines (스트림 분석 코어 분리 포함)
 - 완전 일치까지는 추가 튜닝 필요(폰트 메트릭, 탭 리더 길이/페이지번호 필드, 오브젝트 텍스트박스 레이아웃)
 
-## 다음 리팩토링 단계(계획)
-1. `src/parser` 분리
-   - CFB 로드/엔트리 스캔/스트림 디코딩을 `cfbReader`, `recordStream` 모듈로 이동
-2. `src/preview` 분리
-   - 페이지 분할/문단 레이아웃/표 렌더를 `pagination`, `paragraph`, `table` 모듈로 분리
-3. `src/render` 분리
-   - Summary/DocInfo/Record/Detail 패널 렌더러를 각각 모듈화
-4. 회귀 방지
-   - `diff:preview` 스크립트에 케이스별 기준치 체크(예: avgRms/avgMae threshold) 추가
+## 향후 리팩토링 계획 (재개용)
+목표:
+- `src/main.js`를 오케스트레이션 전용으로 축소(중간 목표: 4000 lines 이하, 최종 목표: 3000 lines 이하)
+- 파서/렌더/프리뷰 경계 고정 및 회귀 자동 검증 체계화
+
+우선순위 P1:
+1. `renderPreviewPanel` 분리
+   - 대상: `buildPreviewModel`, `buildPreviewPagesWithOverflow`, `buildPreviewSegments` 호출부
+   - 신규 모듈: `src/render/previewPanel.js`
+   - 완료 기준: `main.js`에서 Preview 패널 HTML 생성 로직 제거, 동작/페이지 수 동일
+2. 캐시/선택 상태 분리
+   - 대상: `getSelectedStream`, `getStreamAnalysis`
+   - 신규 모듈: `src/state/selection.js`, `src/state/analysisCache.js`
+   - 완료 기준: 상태 전이(스트림 선택/레코드 선택) 사이드이펙트가 함수 단위로 고립
+
+우선순위 P2:
+1. Parser 세분화
+   - 분리 대상:
+     - 분산문서 복호화: `src/parser/distributableDecoder.js`
+     - 레코드 파싱: `src/parser/recordParser.js`
+     - DocInfo 파싱: `src/parser/docInfoParser.js`
+   - 완료 기준: 파서 모듈 간 의존성이 단방향(`utils -> parser -> render`)으로 정리
+2. Preview 세분화
+   - 분리 대상:
+     - 페이지네이션: `src/preview/pagination.js`
+     - 표 분할: `src/preview/tablePagination.js`
+     - 오브젝트 레이아웃: `src/preview/objectLayout.js`
+   - 완료 기준: 표/오브젝트 overflow 분기 로직이 UI 코드와 분리
+
+우선순위 P3:
+1. 자동 회귀 검증 강화
+   - `scripts/preview_pdf_diff.mjs`에 임계치 체크 추가
+   - 케이스별 기준치 파일 예: `scripts/diff_thresholds.json`
+   - 실패 조건 예: `avgRms`, `avgMae`, `renderedPages` mismatch
+2. 아키텍처 문서화
+   - `docs/architecture.md`에 계층/의존성/책임 범위 기록
+   - 신규 모듈 추가 시 파일 책임 3~5줄 요약 유지
+
+재개 체크리스트:
+1. `git pull --rebase`
+2. `npm ci`
+3. `npm run build`
+4. `npm run diff:preview -- --url http://127.0.0.1:4222 --max-pages 2 --python /home/sjkim/work/hwpv/.venv/bin/python --case 3.0:3.0.hwp:3.0.pdf`
+5. `npm run diff:preview -- --url http://127.0.0.1:4223 --max-pages 2 --python /home/sjkim/work/hwpv/.venv/bin/python --case 5.0:5.0.hwp:5.0.pdf`
+
+작업 규칙:
+- `rnd.hwp`는 로컬 전용(커밋/푸시 금지) 유지
+- 리팩토링 커밋은 기능 단위로 작게 분리
+- 각 리팩토링 단계마다 `build + diff smoke` 결과를 `progress.md`에 누적
 
 ## 보안/운영 메모
 - `rnd.hwp`는 외부 반출 금지 정책 유지
