@@ -7,6 +7,7 @@ import { clamp, hwpToPx, hwpToMm } from "./utils/numeric.js";
 import { escapeHtml, escapeHtmlAttr } from "./utils/html.js";
 import { renderAppShell } from "./ui/appShell.js";
 import { buildDocumentFromBytes } from "./parser/documentLoader.js";
+import { analyzeStreamCore } from "./parser/streamAnalyzer.js";
 import { isLikelyRecordStreamPath, mayBeCompressedRecordStreamPath } from "./parser/streamPath.js";
 import { renderDetailPanelView } from "./render/detailPanel.js";
 import { renderDocInfoPanelContent } from "./render/docInfoPanel.js";
@@ -3554,75 +3555,16 @@ function getStreamAnalysis(stream) {
 }
 
 function analyzeStream(stream, compressedFlag, formatMode = "unknown", distributableFlag = false) {
-  const raw = stream.content;
-  if (!raw || raw.length === 0) {
-    return {
-      mode: "raw",
-      decoded: new Uint8Array(),
-      parse: { records: [], consumed: 0, complete: true },
-      records: [],
-      paragraphs: [],
-      recordToParagraph: new Map(),
-    };
-  }
-
-  if (distributableFlag && isDistributableEncryptedStream(stream.fullPath)) {
-    const distCandidates = decodeDistributableStreamCandidates(raw, compressedFlag);
-    if (distCandidates.length) {
-      return selectBestStreamAnalysis(distCandidates, stream.fullPath);
-    }
-  }
-
-  if (formatMode === "legacy-3x-binary" && !isLikelyRecordStreamPath(stream.fullPath)) {
-    return analyzeLegacy3Stream(raw);
-  }
-
-  const candidates = [{ mode: "raw", bytes: raw }];
-  if (compressedFlag && mayBeCompressedRecordStreamPath(stream.fullPath)) {
-    const rawInflated = safeInflate(raw, true);
-    if (rawInflated) {
-      candidates.push({ mode: "inflateRaw(-15)", bytes: rawInflated });
-    }
-
-    const zlibInflated = safeInflate(raw, false);
-    if (zlibInflated) {
-      candidates.push({ mode: "inflate(zlib)", bytes: zlibInflated });
-    }
-  }
-
-  const best = selectBestStreamAnalysis(candidates, stream.fullPath);
-
-  if (best && best.records.length === 0 && formatMode === "legacy-3x-binary") {
-    return analyzeLegacy3Stream(raw);
-  }
-
-  return best;
-}
-
-function selectBestStreamAnalysis(candidates, streamPath) {
-  let best = null;
-  for (const candidate of candidates) {
-    const parse = isLikelyRecordStreamPath(streamPath)
-      ? parseRecords(candidate.bytes)
-      : { records: [], consumed: 0, complete: false };
-    const paragraphContext = parse.records.length
-      ? buildParagraphContext(parse.records)
-      : { paragraphs: [], recordToParagraph: new Map() };
-
-    const score = parse.records.length + paragraphContext.paragraphs.length + (parse.complete ? 10 : 0);
-    if (!best || score > best.score || (score === best.score && candidate.bytes.length > best.decoded.length)) {
-      best = {
-        mode: candidate.mode,
-        decoded: candidate.bytes,
-        parse,
-        records: parse.records,
-        paragraphs: paragraphContext.paragraphs,
-        recordToParagraph: paragraphContext.recordToParagraph,
-        score,
-      };
-    }
-  }
-  return best;
+  return analyzeStreamCore(stream, compressedFlag, formatMode, distributableFlag, {
+    isLikelyRecordStreamPath,
+    mayBeCompressedRecordStreamPath,
+    safeInflate,
+    isDistributableEncryptedStream,
+    decodeDistributableStreamCandidates,
+    analyzeLegacy3Stream,
+    parseRecords,
+    buildParagraphContext,
+  });
 }
 
 function isDistributableEncryptedStream(path) {
