@@ -82,6 +82,12 @@ const PARA_SPLIT_COLUMNS_DEF_BIT = 0x02;
 const PARA_SPLIT_PAGE_BIT = 0x04;
 const PARA_SPLIT_COLUMN_BIT = 0x08;
 const PAGE_Y_RESET_THRESHOLD = 1200;
+const PAGE_CONTENT_FALLBACK_HEIGHT_PX = 980;
+const PAGE_CONTENT_BOTTOM_GUARD_PX = 10;
+const PARAGRAPH_BLOCK_MIN_PX = 14;
+const TABLE_CHUNK_BASE_PX = 10;
+const TABLE_ROW_FALLBACK_PX = 22;
+const TABLE_ROW_MIN_PX = 9;
 
 const SCRIPT_LANGS = ["ko", "en", "hanja", "jp", "other", "symbol", "user"];
 const UTF16LE_DECODER = new TextDecoder("utf-16le");
@@ -1122,7 +1128,7 @@ function renderPreviewPanel() {
     return;
   }
 
-  const pages = trimLeadingEmptyPages(buildPreviewPages(model.paragraphs));
+  const pages = buildPreviewPagesWithOverflow(model.paragraphs, model.pageLayout);
   const sheetClass = PREVIEW_DEBUG ? "preview-sheet preview-sheet-debug" : "preview-sheet preview-sheet-doc";
   const pageStyle = buildPreviewSheetStyle(model.pageLayout);
 
@@ -1308,7 +1314,7 @@ function renderPreviewControlBlock(control, renderHint = null) {
   }
 
   const previewBody = control.tableInfo
-    ? renderTableControlPreview(control.tableInfo)
+    ? renderTableControlPreview(control.tableInfo, control.tableSplitInfo ?? null)
     : control.graphicInfo
       ? renderGraphicControlPreview(control.graphicInfo)
       : control.sectionInfo
@@ -1718,6 +1724,7 @@ function buildStyledTextLines(tokens, charRuns, lineSegments, docInfo, baseStyle
     lines.push({
       runs: buildStyledTextRuns(tokensForLine, charRuns, docInfo, baseStyle, fallbackCharShapeId),
       css: buildLineInlineCss(activeSegment, baseHoriz, baseStyle),
+      estimatedHeightPx: estimateLineHeightPx(activeSegment, baseStyle),
       pageStart: Boolean((activeSegment?.flags ?? 0) & LINE_SEG_PAGE_FIRST_BIT),
       columnStart: Boolean((activeSegment?.flags ?? 0) & LINE_SEG_COLUMN_FIRST_BIT),
     });
@@ -1743,6 +1750,25 @@ function buildStyledTextLines(tokens, charRuns, lineSegments, docInfo, baseStyle
     return [];
   }
   return lines;
+}
+
+function estimateLineHeightPx(segment, baseStyle) {
+  const lineHeightRatio = Number.parseFloat(baseStyle?.lineHeight ?? "1.6");
+  const ratio = Number.isFinite(lineHeightRatio) ? clamp(lineHeightRatio, 1.0, 2.6) : 1.6;
+  const baseFontPx = clamp((baseStyle?.fontSizePt ?? 10) * (96 / 72), 8, 96);
+  let result = baseFontPx * ratio;
+
+  if (segment) {
+    const minHeightUnit = segment.textHeight > 0 ? segment.textHeight : segment.lineHeight;
+    if (Number.isFinite(minHeightUnit) && minHeightUnit > 0) {
+      result = Math.max(result, clamp(hwpToPx(minHeightUnit), 10, 200));
+    }
+    if (Number.isFinite(segment.lineSpaceBelow) && segment.lineSpaceBelow > 0) {
+      result += clamp(hwpToPx(segment.lineSpaceBelow), 0, 72);
+    }
+  }
+
+  return clamp(result, 10, 240);
 }
 
 function buildLineInlineCss(segment, baseHoriz, baseStyle) {
@@ -1891,6 +1917,393 @@ function buildPreviewPages(paragraphs) {
     current.paragraphs.push(paragraph);
   }
   return pages;
+}
+
+function buildPreviewPagesWithOverflow(paragraphs, pageLayout) {
+  const basePages = trimLeadingEmptyPages(buildPreviewPages(paragraphs));
+  if (!basePages.length) {
+    return [];
+  }
+  const contentHeightPx = resolvePageContentHeightPx(pageLayout);
+  const paged = [];
+  for (const basePage of basePages) {
+    const overflowPages = paginatePageParagraphsByHeight(basePage.paragraphs, contentHeightPx);
+    for (const page of overflowPages) {
+      paged.push({
+        index: paged.length + 1,
+        paragraphs: page.paragraphs,
+      });
+    }
+  }
+  return paged;
+}
+
+function resolvePageContentHeightPx(pageLayout) {
+  if (!pageLayout) {
+    return PAGE_CONTENT_FALLBACK_HEIGHT_PX;
+  }
+  if (Number.isFinite(pageLayout.paperHeightPx) && Number.isFinite(pageLayout.topPaddingPx) && Number.isFinite(pageLayout.bottomPaddingPx)) {
+    return clamp(pageLayout.paperHeightPx - pageLayout.topPaddingPx - pageLayout.bottomPaddingPx, 320, 3200);
+  }
+  return PAGE_CONTENT_FALLBACK_HEIGHT_PX;
+}
+
+function paginatePageParagraphsByHeight(paragraphs, contentHeightPx) {
+  const state = {
+    pages: [],
+    current: {
+      paragraphs: [],
+      usedHeightPx: 0,
+    },
+    contentHeightPx,
+  };
+
+  for (const paragraph of paragraphs) {
+    if (paragraph?.breakHints?.pageStart && state.current.paragraphs.length) {
+      startNewPaginationPage(state);
+    }
+    appendParagraphWithOverflow(state, paragraph);
+  }
+
+  if (state.current.paragraphs.length) {
+    state.pages.push(state.current);
+  }
+
+  return state.pages;
+}
+
+function startNewPaginationPage(state) {
+  if (state.current.paragraphs.length) {
+    state.pages.push(state.current);
+  }
+  state.current = {
+    paragraphs: [],
+    usedHeightPx: 0,
+  };
+}
+
+function addPaginationParagraph(state, paragraph, estimatedHeightPx) {
+  state.current.paragraphs.push(paragraph);
+  const consume = Number.isFinite(estimatedHeightPx) ? clamp(estimatedHeightPx, 0, state.contentHeightPx) : PARAGRAPH_BLOCK_MIN_PX;
+  state.current.usedHeightPx += consume;
+}
+
+function appendParagraphWithOverflow(state, paragraph) {
+  if (!paragraph) {
+    return;
+  }
+  const hasText = (paragraph.previewTextNormalized ?? "").length > 0 || (paragraph.textLines?.length ?? 0) > 0;
+  const controls = paragraph.controls ?? [];
+
+  if (!hasText && controls.length > 0) {
+    appendControlOnlyParagraphWithOverflow(state, paragraph);
+    return;
+  }
+
+  const estimatedHeight = estimateParagraphHeightPx(paragraph);
+  if (
+    estimatedHeight > 0 &&
+    state.current.paragraphs.length &&
+    state.current.usedHeightPx + estimatedHeight > state.contentHeightPx - PAGE_CONTENT_BOTTOM_GUARD_PX
+  ) {
+    startNewPaginationPage(state);
+  }
+  addPaginationParagraph(state, paragraph, estimatedHeight);
+}
+
+function appendControlOnlyParagraphWithOverflow(state, paragraph) {
+  const controls = paragraph.controls ?? [];
+  if (!controls.length) {
+    addPaginationParagraph(state, paragraph, estimateParagraphHeightPx(paragraph));
+    return;
+  }
+
+  if (controls.length === 1 && controls[0].tableInfo) {
+    appendTableControlParagraphWithOverflow(state, paragraph, controls[0]);
+    return;
+  }
+
+  controls.forEach((control, index) => {
+    const breakHints = index === 0 ? paragraph.breakHints : { pageStart: false, columnStart: false };
+    const sliced = cloneParagraphWithControls(paragraph, [control], breakHints);
+    if (control.tableInfo) {
+      appendTableControlParagraphWithOverflow(state, sliced, control);
+      return;
+    }
+    const estimatedHeight = estimateParagraphHeightPx(sliced);
+    if (
+      estimatedHeight > 0 &&
+      state.current.paragraphs.length &&
+      state.current.usedHeightPx + estimatedHeight > state.contentHeightPx - PAGE_CONTENT_BOTTOM_GUARD_PX
+    ) {
+      startNewPaginationPage(state);
+    }
+    addPaginationParagraph(state, sliced, estimatedHeight);
+  });
+}
+
+function appendTableControlParagraphWithOverflow(state, paragraph, tableControl) {
+  const tableInfo = tableControl?.tableInfo;
+  if (!tableInfo || !Number.isFinite(tableInfo.rows) || tableInfo.rows <= 0) {
+    const estimatedHeight = estimateParagraphHeightPx(paragraph);
+    if (
+      estimatedHeight > 0 &&
+      state.current.paragraphs.length &&
+      state.current.usedHeightPx + estimatedHeight > state.contentHeightPx - PAGE_CONTENT_BOTTOM_GUARD_PX
+    ) {
+      startNewPaginationPage(state);
+    }
+    addPaginationParagraph(state, paragraph, estimatedHeight);
+    return;
+  }
+
+  const rowHeights = estimateTableRowHeightsPx(tableInfo);
+  let rowStart = 0;
+
+  while (rowStart < tableInfo.rows) {
+    const available = state.contentHeightPx - state.current.usedHeightPx - PAGE_CONTENT_BOTTOM_GUARD_PX;
+    if (available < TABLE_CHUNK_BASE_PX + TABLE_ROW_MIN_PX && state.current.paragraphs.length) {
+      startNewPaginationPage(state);
+      continue;
+    }
+
+    let fitRows = pickTableRowsForHeight(rowHeights, rowStart, available);
+    if (fitRows <= 0) {
+      if (state.current.paragraphs.length) {
+        startNewPaginationPage(state);
+        continue;
+      }
+      fitRows = 1;
+    }
+
+    const rowEnd = Math.min(tableInfo.rows, rowStart + fitRows);
+    const splitInfo =
+      rowStart > 0 || rowEnd < tableInfo.rows
+        ? {
+            startRow: rowStart,
+            endRow: rowEnd,
+            totalRows: tableInfo.rows,
+          }
+        : null;
+    const slicedTableInfo = splitInfo ? sliceTableInfoByRowRange(tableInfo, rowStart, rowEnd) : tableInfo;
+    const slicedControl = {
+      ...tableControl,
+      tableInfo: slicedTableInfo,
+      tableSplitInfo: splitInfo,
+    };
+    const breakHints = rowStart === 0 ? paragraph.breakHints : { pageStart: false, columnStart: false };
+    const slicedParagraph = cloneParagraphWithControls(paragraph, [slicedControl], breakHints);
+    const estimatedHeight = estimateParagraphHeightPx(slicedParagraph);
+
+    if (
+      estimatedHeight > 0 &&
+      state.current.paragraphs.length &&
+      state.current.usedHeightPx + estimatedHeight > state.contentHeightPx - PAGE_CONTENT_BOTTOM_GUARD_PX
+    ) {
+      startNewPaginationPage(state);
+      continue;
+    }
+
+    addPaginationParagraph(state, slicedParagraph, estimatedHeight);
+    rowStart = rowEnd;
+  }
+}
+
+function cloneParagraphWithControls(paragraph, controls, breakHints = paragraph.breakHints) {
+  return {
+    ...paragraph,
+    controls,
+    breakHints,
+  };
+}
+
+function estimateParagraphHeightPx(paragraph) {
+  const textHeight = estimateParagraphTextHeightPx(paragraph);
+  const controls = paragraph?.controls ?? [];
+  const controlsHeight = controls.reduce((sum, control) => sum + estimateControlHeightPx(control), 0);
+  const stackGap = controls.length > 1 ? (controls.length - 1) * 4 : 0;
+  const stackTopGap = controls.length && textHeight > 0 ? 6 : 0;
+  const total = textHeight + stackTopGap + stackGap + controlsHeight;
+  return clamp(total, 0, 3600);
+}
+
+function estimateParagraphTextHeightPx(paragraph) {
+  const style = paragraph?.style ?? null;
+  const spacingBeforePx = Number.isFinite(style?.spacingBeforePx) ? clamp(style.spacingBeforePx, 0, 220) : 0;
+  const spacingAfterPx = Number.isFinite(style?.spacingAfterPx) ? clamp(style.spacingAfterPx, 0, 220) : 0;
+
+  if ((paragraph?.textLines?.length ?? 0) > 0) {
+    const linesHeight = paragraph.textLines.reduce((sum, line) => {
+      if (Number.isFinite(line?.estimatedHeightPx)) {
+        return sum + clamp(line.estimatedHeightPx, 8, 280);
+      }
+      return sum + 18;
+    }, 0);
+    return clamp(linesHeight + spacingBeforePx + spacingAfterPx, 0, 2200);
+  }
+
+  const text = paragraph?.previewTextNormalized ?? paragraph?.previewText ?? "";
+  if (!text) {
+    return 0;
+  }
+
+  const lineHeightRatio = Number.parseFloat(style?.lineHeight ?? "1.6");
+  const ratio = Number.isFinite(lineHeightRatio) ? clamp(lineHeightRatio, 1.0, 2.6) : 1.6;
+  const fontPx = clamp((style?.fontSizePt ?? 10) * (96 / 72), 8, 96);
+  const lineHeightPx = fontPx * ratio;
+  const approxCharsPerLine = 38;
+  const lineCount = Math.max(1, Math.ceil(text.length / approxCharsPerLine));
+  return clamp(lineCount * lineHeightPx + spacingBeforePx + spacingAfterPx, 0, 2200);
+}
+
+function estimateControlHeightPx(control) {
+  if (!control) {
+    return 0;
+  }
+  if (control.tableInfo) {
+    return estimateTableHeightPx(control.tableInfo);
+  }
+  if (control.graphicInfo) {
+    if (isAbsoluteOverlayGraphic(control)) {
+      return 0;
+    }
+    const { height } = resolveGraphicObjectDimensions(control.graphicInfo);
+    const bodyHeight = clamp(hwpToPx(Math.max(0, height)), 12, 2400);
+    return clamp(bodyHeight + 8, 12, 2800);
+  }
+  if (control.ctrlId === "fn  " || control.ctrlId === "en  ") {
+    return 12;
+  }
+  if (control.ctrlId === "secd" || control.ctrlId === "cold" || control.ctrlId === "head" || control.ctrlId === "foot") {
+    return 0;
+  }
+  return 24;
+}
+
+function isAbsoluteOverlayGraphic(control) {
+  if (control?.ctrlId !== "gso " || !control.graphicInfo?.objectCommon?.propertyBits) {
+    return false;
+  }
+  const bits = control.graphicInfo.objectCommon.propertyBits;
+  const flow = bits.textFlow;
+  if (!(flow === 2 || flow === 3) || bits.likeCharacter) {
+    return false;
+  }
+  const vRel = bits.vertRelToName;
+  const hRel = bits.horzRelToName;
+  return (vRel === "paper" || vRel === "page") && (hRel === "paper" || hRel === "page");
+}
+
+function estimateTableHeightPx(tableInfo) {
+  const rowHeights = estimateTableRowHeightsPx(tableInfo);
+  if (!rowHeights.length) {
+    return 0;
+  }
+  return clamp(TABLE_CHUNK_BASE_PX + rowHeights.reduce((sum, value) => sum + value, 0), 16, 6400);
+}
+
+function estimateTableRowHeightsPx(tableInfo) {
+  const rowCount = Number.isFinite(tableInfo?.rows) ? Math.max(0, tableInfo.rows) : 0;
+  if (!rowCount) {
+    return [];
+  }
+  const rowHeights = Array.from({ length: rowCount }, () => 0);
+  const rowSizes = Array.isArray(tableInfo?.rowSizes) ? tableInfo.rowSizes : [];
+  for (let i = 0; i < rowCount; i += 1) {
+    const rowSize = rowSizes[i];
+    if (Number.isFinite(rowSize) && rowSize > 0) {
+      rowHeights[i] = Math.max(rowHeights[i], clamp(hwpToPx(rowSize), TABLE_ROW_MIN_PX, 360));
+    }
+  }
+
+  const cells = Array.isArray(tableInfo?.cells) ? tableInfo.cells : [];
+  for (const cell of cells) {
+    if (!cell || cell.covered) {
+      continue;
+    }
+    if (!Number.isFinite(cell.row) || cell.row < 0 || cell.row >= rowCount) {
+      continue;
+    }
+    const rowSpan = Math.max(1, cell.rowSpan || 1);
+    let cellHeightPx = Number.isFinite(cell.height) && cell.height > 0 ? hwpToPx(cell.height) : 0;
+    if (!(cellHeightPx > 0) && cell.text) {
+      const lines = Math.max(1, String(cell.text).split(/\n+/).length);
+      cellHeightPx = lines * 14 + 8;
+    }
+    if (!(cellHeightPx > 0)) {
+      continue;
+    }
+    const perRow = clamp(cellHeightPx / rowSpan, TABLE_ROW_MIN_PX, 320);
+    const rowEnd = Math.min(rowCount, cell.row + rowSpan);
+    for (let row = cell.row; row < rowEnd; row += 1) {
+      rowHeights[row] = Math.max(rowHeights[row], perRow);
+    }
+  }
+
+  for (let i = 0; i < rowHeights.length; i += 1) {
+    if (!(rowHeights[i] > 0)) {
+      rowHeights[i] = TABLE_ROW_FALLBACK_PX;
+    }
+  }
+
+  return rowHeights;
+}
+
+function pickTableRowsForHeight(rowHeights, rowStart, availableHeightPx) {
+  if (!Array.isArray(rowHeights) || rowStart < 0 || rowStart >= rowHeights.length) {
+    return 0;
+  }
+  if (!(availableHeightPx > TABLE_CHUNK_BASE_PX + TABLE_ROW_MIN_PX)) {
+    return 0;
+  }
+  let used = TABLE_CHUNK_BASE_PX;
+  let rows = 0;
+  for (let i = rowStart; i < rowHeights.length; i += 1) {
+    const rowHeight = clamp(rowHeights[i], TABLE_ROW_MIN_PX, 320);
+    if (rows > 0 && used + rowHeight > availableHeightPx) {
+      break;
+    }
+    if (rows === 0 && used + rowHeight > availableHeightPx) {
+      return 1;
+    }
+    used += rowHeight;
+    rows += 1;
+  }
+  return rows;
+}
+
+function sliceTableInfoByRowRange(tableInfo, rowStart, rowEnd) {
+  const start = clamp(Math.floor(rowStart), 0, Math.max(0, tableInfo.rows - 1));
+  const end = clamp(Math.floor(rowEnd), start + 1, tableInfo.rows);
+  const rows = Math.max(1, end - start);
+  const cells = (tableInfo.cells ?? [])
+    .map((cell) => {
+      if (!cell || cell.covered) {
+        return null;
+      }
+      const cellStart = cell.row;
+      const cellEnd = cell.row + Math.max(1, cell.rowSpan);
+      if (cellEnd <= start || cellStart >= end) {
+        return null;
+      }
+      const clippedStart = Math.max(cellStart, start);
+      const clippedEnd = Math.min(cellEnd, end);
+      const clippedSpan = Math.max(1, clippedEnd - clippedStart);
+      return {
+        ...cell,
+        row: clippedStart - start,
+        rowSpan: clippedSpan,
+      };
+    })
+    .filter(Boolean);
+
+  return {
+    ...tableInfo,
+    rows,
+    rowSizes: Array.isArray(tableInfo.rowSizes) ? tableInfo.rowSizes.slice(start, end) : [],
+    cells,
+    zones: [],
+  };
 }
 
 function trimLeadingEmptyPages(pages) {
@@ -3182,7 +3595,7 @@ function parseShapeComponent(payload) {
   };
 }
 
-function renderTableControlPreview(tableInfo) {
+function renderTableControlPreview(tableInfo, splitInfo = null) {
   const grid = buildTableGrid(tableInfo.rows, tableInfo.cols, tableInfo.cells);
   if (!grid.rows.length || !grid.cols.length) {
     return `<div class="control-table-empty">Unable to build table grid.</div>`;
@@ -3245,11 +3658,23 @@ function renderTableControlPreview(tableInfo) {
   return `
     <div class="control-table-wrap ${PREVIEW_DEBUG ? "" : "doc-table-wrap"}">
       ${
+        splitInfo
+          ? `<div class="control-table-split-note">${escapeHtml(
+              `rows ${splitInfo.startRow + 1}-${splitInfo.endRow} / ${splitInfo.totalRows}`
+            )}</div>`
+          : ""
+      }
+      ${
         PREVIEW_DEBUG
           ? `<div class="control-table-meta">
               <span>rows ${tableInfo.rows}</span>
               <span>cols ${tableInfo.cols}</span>
               <span>cells ${tableInfo.cells.length}</span>
+              ${
+                splitInfo
+                  ? `<span>${escapeHtml(`split ${splitInfo.startRow + 1}-${splitInfo.endRow}/${splitInfo.totalRows}`)}</span>`
+                  : ""
+              }
             </div>`
           : ""
       }

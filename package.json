@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "diff:preview": "node scripts/preview_pdf_diff.mjs"
   },
   "keywords": [],
   "author": "",

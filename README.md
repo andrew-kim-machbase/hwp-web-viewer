@@ -16,6 +16,20 @@ npm run dev
 
 Open the local Vite URL, then select a `.hwp` file.
 
+## PDF Diff Loop
+
+Run automated preview-vs-PDF comparison (captures preview pages with Playwright and compares against rendered PDF pages):
+
+```bash
+npm run diff:preview -- --max-pages 30
+```
+
+Outputs:
+
+- `artifacts/diff/<case>/preview/preview-page-XXX.png`
+- `artifacts/diff/<case>/report.json`
+- `artifacts/diff/summary.json`
+
 ## Current parsing scope
 
 - Parses `FileHeader` (`signature`, `version`, `flags`)
@@ -65,9 +79,13 @@ Open the local Vite URL, then select a `.hwp` file.
     - supports compact table variants where cell metadata is provided via descendant `HWPTAG_LIST_HEADER(72)` records
     - maps descendant paragraph text into cells using each cell's paragraph-count metadata
     - displays an HTML table with merged-cell structure, cell text, and per-cell metrics
+    - applies row-height based table chunking for overflow pagination
   - For section controls (`secd` + `HWPTAG_PAGE_DEF(73)`), applies paper/margin-derived page width to preview sheet
   - For column controls (`cold`), parses column count/gap/direction/width hints and applies multi-column flow segments in preview
   - For graphic controls (`gso `), decodes object-flow hints and renders floating/inline object blocks with text wrap approximation
+  - Applies content-height overflow pagination:
+    - splits oversized control-only paragraphs across pages
+    - keeps absolute-overlay graphics out of normal flow height accumulation
   - Parses additional body/object records:
     - `HWPTAG_SHAPE_COMPONENT_TEXTART(90)`
     - `HWPTAG_FORM_OBJECT(91)`

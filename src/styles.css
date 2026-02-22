@@ -731,6 +731,17 @@ body {
   color: #325553;
 }
 
+.control-table-split-note {
+  padding: 0.2rem 0.42rem 0.08rem;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.6rem;
+  color: #3d625f;
+}
+
+.doc-table-wrap .control-table-split-note {
+  color: #6f6f6f;
+}
+
 .control-table-grid {
   width: 100%;
   border-collapse: collapse;
