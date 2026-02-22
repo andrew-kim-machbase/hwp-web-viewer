@@ -29,6 +29,7 @@
     - `parseFileHeader`, `tryReadCfbEntries`, `detectDocumentFormat`, `buildDocumentFromBytes`
   - 스트림 경로 판별 분리: `src/parser/streamPath.js`
   - 요약 패널 렌더 분리: `src/render/summary.js`
+  - 압축 복원 유틸 분리: `src/utils/compression.js` (`safeInflate`)
 
 ## 커밋 이력(이번 라운드)
 - `af74f7f` Stabilize diff capture and add tab leader rendering
@@ -57,6 +58,7 @@
 - TOC/표지의 시각 정합은 이전 대비 개선
 - `main.js` 크기 축소 진행 중: 7182 -> 6752 lines (상수/유틸/UI 셸 분리 반영)
 - `main.js` 크기 축소 진행 중: 7182 -> 6441 lines (상수/유틸/UI 셸/로더/요약렌더 분리 반영)
+- `main.js` 크기 축소 진행 중: 7182 -> 6433 lines (압축 유틸 분리 포함)
 - 완전 일치까지는 추가 튜닝 필요(폰트 메트릭, 탭 리더 길이/페이지번호 필드, 오브젝트 텍스트박스 레이아웃)
 
 ## 다음 리팩토링 단계(계획)
