@@ -545,6 +545,11 @@ body {
   word-break: keep-all;
 }
 
+.preview-line-tabbed {
+  text-align: left !important;
+  text-justify: auto;
+}
+
 .preview-list-marker {
   display: inline-block;
   min-width: 2.3em;

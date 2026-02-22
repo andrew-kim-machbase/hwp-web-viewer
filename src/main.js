@@ -1607,6 +1607,8 @@ function renderStyledTextLines(textLines, options = {}) {
   const markerHtml = renderListMarker(options.listMarker, options.listType);
   return (textLines ?? [])
     .map((line, index) => {
+      const normalizedRuns = normalizeTabRunsForLine(line.runs);
+      const hasTabRuns = normalizedRuns.some((run) => Boolean(run?.tab));
       const lineOptions =
         index === 0 && markerHtml
           ? {
@@ -1614,12 +1616,40 @@ function renderStyledTextLines(textLines, options = {}) {
               initialCursorPx: estimateListMarkerAdvancePx(options.listMarker, options.listType, options.baseStyle),
             }
           : options;
-      const textHtml = line.runs?.length ? renderStyledTextRuns(line.runs, lineOptions) : "&nbsp;";
+      const textHtml = normalizedRuns?.length ? renderStyledTextRuns(normalizedRuns, lineOptions) : "&nbsp;";
       const mergedText = index === 0 && markerHtml ? `${markerHtml}${textHtml}` : textHtml;
+      const lineClass = hasTabRuns ? "preview-line preview-line-tabbed" : "preview-line";
       const attrs = line.css ? ` style="${escapeHtmlAttr(line.css)}"` : "";
-      return `<span class="preview-line"${attrs}>${mergedText}</span>`;
+      return `<span class="${lineClass}"${attrs}>${mergedText}</span>`;
     })
     .join("");
+}
+
+function normalizeTabRunsForLine(runs) {
+  if (!Array.isArray(runs) || !runs.length) {
+    return [];
+  }
+  const tabIndexes = [];
+  for (let i = 0; i < runs.length; i += 1) {
+    if (runs[i]?.tab) {
+      tabIndexes.push(i);
+    }
+  }
+  if (tabIndexes.length <= 1) {
+    return runs;
+  }
+  const keepIndex = tabIndexes[tabIndexes.length - 1];
+  return runs.map((run, index) => {
+    if (!run?.tab || index === keepIndex) {
+      return run;
+    }
+    // Older documents may emit multiple tab controls inside TOC labels.
+    // Keep only the final leader tab and normalize earlier tabs to spaces.
+    return {
+      text: " ",
+      css: "",
+    };
+  });
 }
 
 function renderListMarker(marker, listType = "") {
