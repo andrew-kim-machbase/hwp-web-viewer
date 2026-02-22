@@ -24,6 +24,11 @@
   - HWP 상수/사전 분리: `src/constants/hwp.js`
   - UI 셸 분리: `src/ui/appShell.js` (초기 DOM 템플릿/바인딩)
   - `src/main.js`는 오케스트레이션 중심으로 정리
+- `src` 기능 분리 리팩토링(2차)
+  - 문서 로딩 파이프라인 분리: `src/parser/documentLoader.js`
+    - `parseFileHeader`, `tryReadCfbEntries`, `detectDocumentFormat`, `buildDocumentFromBytes`
+  - 스트림 경로 판별 분리: `src/parser/streamPath.js`
+  - 요약 패널 렌더 분리: `src/render/summary.js`
 
 ## 커밋 이력(이번 라운드)
 - `af74f7f` Stabilize diff capture and add tab leader rendering
@@ -31,6 +36,7 @@
 - `7ceb6e4` Relax cover textbox wrapping for large slash titles
 - `386d892` refactor: split shared helpers into src/utils modules
 - `51efe24` refactor: extract hwp constants into dedicated module
+- `9c55835` refactor: split document loading into parser modules
 
 ## 검증 결과
 - 실행 명령
@@ -38,6 +44,8 @@
   - `npm run diff:preview -- --url http://127.0.0.1:4208 --max-pages 20 --python /home/sjkim/work/hwpv/.venv/bin/python`
   - `npm run diff:preview -- --url http://127.0.0.1:4210 --max-pages 1 --python /home/sjkim/work/hwpv/.venv/bin/python --case 3.0:3.0.hwp:3.0.pdf`
   - `npm run diff:preview -- --url http://127.0.0.1:4211 --max-pages 1 --python /home/sjkim/work/hwpv/.venv/bin/python --case 5.0:5.0.hwp:5.0.pdf`
+  - `npm run diff:preview -- --url http://127.0.0.1:4214 --max-pages 1 --python /home/sjkim/work/hwpv/.venv/bin/python --case 3.0:3.0.hwp:3.0.pdf`
+  - `npm run diff:preview -- --url http://127.0.0.1:4215 --max-pages 1 --python /home/sjkim/work/hwpv/.venv/bin/python --case 5.0:5.0.hwp:5.0.pdf`
 - 결과(최근)
   - 3.0: `renderedPages=122`, `avgRms=33.726`, `avgMae=9.5495`
   - 5.0: `renderedPages=71`, `avgRms=32.6903`, `avgMae=8.8992`
@@ -48,6 +56,7 @@
 - 페이지 수는 3.0/5.0 모두 PDF와 일치
 - TOC/표지의 시각 정합은 이전 대비 개선
 - `main.js` 크기 축소 진행 중: 7182 -> 6752 lines (상수/유틸/UI 셸 분리 반영)
+- `main.js` 크기 축소 진행 중: 7182 -> 6441 lines (상수/유틸/UI 셸/로더/요약렌더 분리 반영)
 - 완전 일치까지는 추가 튜닝 필요(폰트 메트릭, 탭 리더 길이/페이지번호 필드, 오브젝트 텍스트박스 레이아웃)
 
 ## 다음 리팩토링 단계(계획)
