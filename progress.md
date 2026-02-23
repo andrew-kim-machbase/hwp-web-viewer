@@ -90,6 +90,22 @@
   - 3.x 바이너리(그리기/OLE/특수문자 구조) 전체 파서는 아직 없음(legacy heuristic 중심).
   - 현재 샘플 `3.0.hwp`/`5.0.hwp`는 모두 `HWP 5.x distributable record`로 감지되어, 실제 렌더 경로는 5.x 레코드 파서가 사용됨.
 
+### 추가 업데이트 (2026-02-23, 스펙 미구현 1차 구현)
+- 구현 반영
+  - `HWPTAG_BORDER_FILL(20)` 파서 확장
+    - 4방향 선 타입/굵기/색, 대각선 정보, 채우기 정보(단색/그라데이션/이미지) 구조 파싱 추가
+    - 표 셀 배경색은 기존과 동일하게 유지하되, 셀/존/테이블 BorderFill ID 우선순위 해석 추가
+  - `HWPTAG_PARA_RANGE_TAG(70)` 파서 추가 (`start/end/tagType/tagData`)
+  - `HWPTAG_CTRL_DATA(87)` Parameter Set 파서 추가(중첩 set/array/binData 포함, 안전한 제한 파싱)
+  - `HWPTAG_SHAPE_COMPONENT(76)` Rendering matrix 파싱 추가(translation + scale/rotation pair)
+  - 고급 레코드 상세 뷰(`decodeAdvancedTagInfo`)에 위 태그(20/70/76/87) 해석 표시 추가
+- 검증
+  - `npm run build` 통과
+  - `npm run diff:preview -- --url http://127.0.0.1:4244 --max-pages 2 --python python3 --artifacts artifacts/diff_kampa_after_spec_phase1b --case kampa:docs/20250828_수요품목서\\ 양식_KAMPA.hwp:docs/20250828_수요품목서\\ 양식_KAMPA.pdf`
+    - KAMPA: `renderedPages=2`(PDF=2), `avgRms=30.3997`, `avgMae=6.2889`
+  - `npm run diff:preview -- --url http://127.0.0.1:4245 --max-pages 1 --python python3 --artifacts artifacts/diff_docs_after_spec_phase1b --docs-dir docs`
+    - docs 16케이스 1p 평균: `avgRms=51.3191`, `avgMae=19.2016` (기존 `after_linecap`와 동일), 페이지 수도 동일
+
 ### 남은 핵심 과제
 - 대용량 문서 페이지 수 오차 잔존
   - `1. 최종보고서_(주)마크베이스(날인본)`: `249 vs PDF 194`

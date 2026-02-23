@@ -55,6 +55,9 @@ import {
   COLUMN_DIRECTION_NAMES,
   TAB_ALIGN_NAMES,
   TAB_LEADER_NAMES,
+  BORDER_LINE_TYPE_NAMES,
+  BORDER_DIAGONAL_TYPE_NAMES,
+  BORDER_LINE_WIDTH_MM,
   BIN_STORAGE_TYPE_NAMES,
   BIN_COMPRESSION_NAMES,
   CONTROL_CHAR_SIZE,
@@ -1634,6 +1637,9 @@ function buildPreviewModel() {
       const lineSegments = paragraph.lineSegRecord
         ? parseParaLineSeg(getRecordPayload(analysis.decoded, paragraph.lineSegRecord))
         : [];
+      const rangeTags = paragraph.rangeTagRecord
+        ? parseParaRangeTag(getRecordPayload(analysis.decoded, paragraph.rangeTagRecord))
+        : [];
       const breakHints = extractParagraphBreakHints(lineSegments, header);
       const firstLineY = lineSegments.length ? lineSegments[0].lineVerticalPos : null;
       const headerLevel = paragraph.headerRecord?.level ?? 0;
@@ -1694,6 +1700,7 @@ function buildPreviewModel() {
         previewTextNormalized: normalizedText,
         textRuns,
         textLines,
+        rangeTags,
         listMarker: listContext.marker,
         listType: listContext.type,
         listLevel: listContext.level,
@@ -2837,8 +2844,35 @@ function parseShapeComponent(payload) {
   const rotationCenterX = dv.getInt32(38, true);
   const rotationCenterY = dv.getInt32(42, true);
   let matrixPairCount = null;
-  if (payload.length >= 48) {
-    matrixPairCount = dv.getUint16(46, true);
+  let rendering = null;
+  let cursor = 46;
+  if (payload.length >= cursor + 2) {
+    matrixPairCount = dv.getUint16(cursor, true);
+    cursor += 2;
+    const translation = parseMatrix6x2(payload, cursor);
+    if (translation) {
+      cursor += 48;
+      const matrixPairs = [];
+      const safePairCount = clamp(matrixPairCount, 0, 256);
+      for (let i = 0; i < safePairCount; i += 1) {
+        const scale = parseMatrix6x2(payload, cursor);
+        const rotationMatrix = parseMatrix6x2(payload, cursor + 48);
+        if (!scale || !rotationMatrix) {
+          break;
+        }
+        matrixPairs.push({
+          index: i,
+          scale,
+          rotation: rotationMatrix,
+        });
+        cursor += 96;
+      }
+      rendering = {
+        translation,
+        matrixPairs,
+        consumedBytes: cursor - 46,
+      };
+    }
   }
 
   return {
@@ -2856,7 +2890,20 @@ function parseShapeComponent(payload) {
     rotationCenterX,
     rotationCenterY,
     matrixPairCount,
+    rendering,
   };
+}
+
+function parseMatrix6x2(payload, offset) {
+  if (!payload || offset + 48 > payload.length) {
+    return null;
+  }
+  const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  const values = [];
+  for (let i = 0; i < 6; i += 1) {
+    values.push(dv.getFloat64(offset + i * 8, true));
+  }
+  return values;
 }
 
 function renderTableControlPreview(tableInfo, splitInfo = null) {
@@ -2964,18 +3011,19 @@ function resolveTableCellInlineStyle(cell, tableInfo, docInfo = state.doc?.docIn
     return "";
   }
   const borderFill = resolveTableCellBorderFill(cell, tableInfo, docInfo);
-  if (!borderFill) {
-    return "";
+  const styleParts = [];
+
+  if (borderFill) {
+    const fill = borderFill.fillColor;
+    if (fill && !fill.auto) {
+      const hex = String(fill.hex || "").toLowerCase();
+      if (hex && hex !== "#ffffff") {
+        styleParts.push(`background:${hex}`);
+      }
+    }
   }
-  const fill = borderFill.fillColor;
-  if (!fill || fill.auto) {
-    return "";
-  }
-  const hex = String(fill.hex || "").toLowerCase();
-  if (!hex || hex === "#ffffff") {
-    return "";
-  }
-  return `background:${hex}`;
+
+  return styleParts.join(";");
 }
 
 function resolveTableCellBorderFill(cell, tableInfo, docInfo) {
@@ -2983,11 +3031,34 @@ function resolveTableCellBorderFill(cell, tableInfo, docInfo) {
   if (!byId) {
     return null;
   }
-  const candidates = [cell.borderFillId, tableInfo?.borderFillId].filter((value) => Number.isFinite(value) && value > 0);
+  const zoneBorderFillId = resolveTableZoneBorderFillId(cell, tableInfo);
+  const candidates = [cell.borderFillId, zoneBorderFillId, tableInfo?.borderFillId].filter(
+    (value) => Number.isFinite(value) && value > 0
+  );
   for (const id of candidates) {
     const item = byId.get(id);
     if (item) {
       return item;
+    }
+  }
+  return null;
+}
+
+function resolveTableZoneBorderFillId(cell, tableInfo) {
+  if (!cell || !Array.isArray(tableInfo?.zones) || !tableInfo.zones.length) {
+    return null;
+  }
+  for (const zone of tableInfo.zones) {
+    if (!zone || !Number.isFinite(zone.borderFillId) || zone.borderFillId <= 0) {
+      continue;
+    }
+    if (
+      cell.col >= zone.startCol &&
+      cell.col <= zone.endCol &&
+      cell.row >= zone.startRow &&
+      cell.row <= zone.endRow
+    ) {
+      return zone.borderFillId;
     }
   }
   return null;
@@ -5000,18 +5071,185 @@ function parseTrackChangeAuthorRecord(payload, id) {
 function parseDocBorderFill(payload, id) {
   const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
   const property = payload.length >= 2 ? dv.getUint16(0, true) : null;
-  const fillType = payload.length >= 36 ? dv.getUint32(32, true) : null;
-  const hasColorFill = payload.length >= 53 && Number.isFinite(fillType) && Boolean(fillType & 0x1);
-  const fillColor = hasColorFill && payload.length >= 40 ? parseColorRef(dv.getUint32(36, true)) : null;
-  const hatchColor = hasColorFill && payload.length >= 44 ? parseColorRef(dv.getUint32(40, true)) : null;
+  const lineTypeCodes = payload.length >= 6 ? Array.from(payload.subarray(2, 6)) : [];
+  const lineWidthCodes = payload.length >= 10 ? Array.from(payload.subarray(6, 10)) : [];
+  const lineColors = [];
+  for (let i = 0; i < 4; i += 1) {
+    const colorOffset = 10 + i * 4;
+    if (colorOffset + 4 <= payload.length) {
+      lineColors.push(parseColorRef(dv.getUint32(colorOffset, true)));
+    } else {
+      lineColors.push(null);
+    }
+  }
+  const lineSides = ["left", "right", "top", "bottom"];
+  const borderLines = lineSides.map((side, index) => {
+    const typeCode = lineTypeCodes[index] ?? null;
+    const widthCode = lineWidthCodes[index] ?? null;
+    const color = lineColors[index] ?? null;
+    return {
+      side,
+      typeCode,
+      typeName: typeCode != null ? BORDER_LINE_TYPE_NAMES[typeCode] ?? `line${typeCode}` : null,
+      widthCode,
+      widthMm: widthCode != null ? BORDER_LINE_WIDTH_MM[widthCode] ?? null : null,
+      widthPx:
+        widthCode != null && BORDER_LINE_WIDTH_MM[widthCode] != null
+          ? clamp((BORDER_LINE_WIDTH_MM[widthCode] * 96) / 25.4, 0.2, 20)
+          : null,
+      color,
+    };
+  });
+  const diagonalType = payload.length >= 27 ? payload[26] : null;
+  const diagonalWidthCode = payload.length >= 28 ? payload[27] : null;
+  const diagonalColor = payload.length >= 32 ? parseColorRef(dv.getUint32(28, true)) : null;
+  const fill = parseBorderFillInfo(payload, 32);
 
   return {
     id,
     property,
-    fillType,
-    fillColor,
-    hatchColor,
+    propertyBits: decodeBorderFillPropertyBits(property),
+    lineTypeCodes,
+    lineWidthCodes,
+    lineColors,
+    borderLines,
+    diagonalType,
+    diagonalTypeName: diagonalType != null ? BORDER_DIAGONAL_TYPE_NAMES[diagonalType] ?? `diag${diagonalType}` : null,
+    diagonalWidthCode,
+    diagonalWidthMm: diagonalWidthCode != null ? BORDER_LINE_WIDTH_MM[diagonalWidthCode] ?? null : null,
+    diagonalColor,
+    fillType: fill.type,
+    fillColor: fill.colorFill?.backgroundColor ?? null,
+    hatchColor: fill.colorFill?.hatchColor ?? null,
+    fill,
     payloadSize: payload.length,
+  };
+}
+
+function decodeBorderFillPropertyBits(property) {
+  if (!Number.isFinite(property)) {
+    return null;
+  }
+  const value = property >>> 0;
+  return {
+    effect3d: Boolean(value & (1 << 0)),
+    shadow: Boolean(value & (1 << 1)),
+    slashShape: bitsValue(value, 2, 3),
+    backSlashShape: bitsValue(value, 5, 3),
+    slashCrooked: bitsValue(value, 8, 2),
+    backSlashCrooked: Boolean(value & (1 << 10)),
+    slashRotate180: Boolean(value & (1 << 11)),
+    backSlashRotate180: Boolean(value & (1 << 12)),
+    centerLine: Boolean(value & (1 << 13)),
+  };
+}
+
+function parseBorderFillInfo(payload, offset = 32) {
+  if (!payload || offset + 4 > payload.length) {
+    return {
+      type: 0,
+      colorFill: null,
+      gradientFill: null,
+      imageFill: null,
+      gradientCenter: null,
+      extraSize: 0,
+      extraBytes: 0,
+    };
+  }
+
+  const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  let cursor = offset;
+  const type = dv.getUint32(cursor, true);
+  cursor += 4;
+
+  let colorFill = null;
+  if ((type & 0x00000001) !== 0 && cursor + 12 <= payload.length) {
+    colorFill = {
+      backgroundColor: parseColorRef(dv.getUint32(cursor, true)),
+      hatchColor: parseColorRef(dv.getUint32(cursor + 4, true)),
+      hatchStyle: dv.getInt32(cursor + 8, true),
+    };
+    cursor += 12;
+  }
+
+  let gradientFill = null;
+  if ((type & 0x00000004) !== 0 && cursor + 12 <= payload.length) {
+    const gradientType = dv.getInt16(cursor, true);
+    const angle = dv.getInt16(cursor + 2, true);
+    const centerX = dv.getInt16(cursor + 4, true);
+    const centerY = dv.getInt16(cursor + 6, true);
+    const step = dv.getInt16(cursor + 8, true);
+    const colorCount = dv.getInt16(cursor + 10, true);
+    cursor += 12;
+
+    const safeColorCount = clamp(colorCount, 0, 256);
+    const positions = [];
+    if (safeColorCount > 2) {
+      for (let i = 0; i < safeColorCount && cursor + 4 <= payload.length; i += 1) {
+        positions.push(dv.getInt32(cursor, true));
+        cursor += 4;
+      }
+    }
+
+    const colors = [];
+    for (let i = 0; i < safeColorCount && cursor + 4 <= payload.length; i += 1) {
+      colors.push(parseColorRef(dv.getUint32(cursor, true)));
+      cursor += 4;
+    }
+
+    gradientFill = {
+      gradientType,
+      angle,
+      centerX,
+      centerY,
+      step,
+      colorCount: safeColorCount,
+      positions,
+      colors,
+    };
+  }
+
+  let imageFill = null;
+  if ((type & 0x00000002) !== 0 && cursor + 6 <= payload.length) {
+    const signed = (value) => (value > 127 ? value - 256 : value);
+    imageFill = {
+      fillType: payload[cursor],
+      brightness: signed(payload[cursor + 1]),
+      contrast: signed(payload[cursor + 2]),
+      effect: payload[cursor + 3],
+      binDataId: dv.getUint16(cursor + 4, true),
+    };
+    cursor += 6;
+  }
+
+  if (cursor + 4 <= payload.length) {
+    // Historically used as "extra gradient bytes present" switch.
+    cursor += 4;
+  }
+
+  let gradientCenter = null;
+  if (cursor + 1 <= payload.length) {
+    gradientCenter = payload[cursor];
+    cursor += 1;
+  }
+
+  let extraSize = 0;
+  if (cursor + 4 <= payload.length) {
+    extraSize = dv.getUint32(cursor, true);
+    cursor += 4;
+  }
+
+  const remaining = Math.max(0, payload.length - cursor);
+  const extraBytes = Math.min(remaining, Math.max(0, extraSize));
+
+  return {
+    type,
+    colorFill,
+    gradientFill,
+    imageFill,
+    gradientCenter,
+    extraSize,
+    extraBytes,
   };
 }
 
@@ -5415,6 +5653,7 @@ function buildParagraphContext(records) {
         textRecord: null,
         charShapeRecord: null,
         lineSegRecord: null,
+        rangeTagRecord: null,
         ctrlHeaderRecords: [],
         records: [],
       };
@@ -5438,6 +5677,8 @@ function buildParagraphContext(records) {
       current.charShapeRecord = record;
     } else if (record.tag === 69 && !current.lineSegRecord) {
       current.lineSegRecord = record;
+    } else if (record.tag === 70 && !current.rangeTagRecord) {
+      current.rangeTagRecord = record;
     } else if (record.tag === 71) {
       current.ctrlHeaderRecords.push(record);
     }
@@ -5536,6 +5777,34 @@ function parseParaLineSeg(payload) {
   return segments;
 }
 
+function parseParaRangeTag(payload) {
+  if (!payload?.length) {
+    return [];
+  }
+  const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  const itemSize = 12;
+  const count = Math.floor(payload.length / itemSize);
+  const items = [];
+
+  for (let i = 0; i < count; i += 1) {
+    const base = i * itemSize;
+    const start = dv.getUint32(base, true);
+    const end = dv.getUint32(base + 4, true);
+    const packedTag = dv.getUint32(base + 8, true);
+    const tagType = (packedTag >>> 24) & 0xff;
+    const tagData = packedTag & 0x00ffffff;
+    items.push({
+      start,
+      end,
+      packedTag,
+      tagType,
+      tagData,
+    });
+  }
+
+  return items;
+}
+
 function parseCtrlHeader(payload, record = null) {
   const ctrlBytes = payload.subarray(0, 4);
   const rawId = ctrlBytes.length === 4 ? bytesToAscii(ctrlBytes) : "";
@@ -5559,9 +5828,233 @@ function parseCtrlHeader(payload, record = null) {
   };
 }
 
+function parseCtrlData(payload) {
+  if (!payload?.length) {
+    return null;
+  }
+
+  const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+
+  const parseParameterSetAt = (offset, depth = 0) => {
+    if (offset + 4 > payload.length || depth > 5) {
+      return null;
+    }
+    const setId = dv.getUint16(offset, true);
+    const itemCountRaw = dv.getInt16(offset + 2, true);
+    const itemCount = clamp(itemCountRaw, 0, 1024);
+    let cursor = offset + 4;
+    const items = [];
+
+    for (let i = 0; i < itemCount; i += 1) {
+      const parsedItem = parseParameterItemAt(cursor, depth + 1);
+      if (!parsedItem) {
+        break;
+      }
+      items.push(parsedItem.item);
+      cursor = parsedItem.nextOffset;
+    }
+
+    return {
+      setId,
+      itemCount,
+      itemCountRaw,
+      items,
+      nextOffset: cursor,
+    };
+  };
+
+  const parseParameterItemAt = (offset, depth = 0) => {
+    if (offset + 4 > payload.length || depth > 7) {
+      return null;
+    }
+    const itemId = dv.getUint16(offset, true);
+    const type = dv.getUint16(offset + 2, true);
+    let cursor = offset + 4;
+    let value = null;
+
+    if (type === 0) {
+      value = null;
+    } else if (type === 1) {
+      const info = readUtf16LengthPrefixed(payload, cursor);
+      if (!info) {
+        return null;
+      }
+      value = info.text;
+      cursor = info.nextOffset;
+    } else if (type === 2) {
+      if (cursor + 1 > payload.length) return null;
+      value = payload[cursor] > 127 ? payload[cursor] - 256 : payload[cursor];
+      cursor += 1;
+    } else if (type === 3) {
+      if (cursor + 2 > payload.length) return null;
+      value = dv.getInt16(cursor, true);
+      cursor += 2;
+    } else if (type === 4 || type === 5) {
+      if (cursor + 4 > payload.length) return null;
+      value = dv.getInt32(cursor, true);
+      cursor += 4;
+    } else if (type === 6) {
+      if (cursor + 1 > payload.length) return null;
+      value = payload[cursor];
+      cursor += 1;
+    } else if (type === 7) {
+      if (cursor + 2 > payload.length) return null;
+      value = dv.getUint16(cursor, true);
+      cursor += 2;
+    } else if (type === 8 || type === 9) {
+      if (cursor + 4 > payload.length) return null;
+      value = dv.getUint32(cursor, true);
+      cursor += 4;
+    } else if (type === 0x8000) {
+      const nested = parseParameterSetAt(cursor, depth + 1);
+      if (!nested) {
+        return null;
+      }
+      value = nested;
+      cursor = nested.nextOffset;
+    } else if (type === 0x8001) {
+      if (cursor + 2 > payload.length) return null;
+      const countRaw = dv.getInt16(cursor, true);
+      const count = clamp(countRaw, 0, 256);
+      cursor += 2;
+      const list = [];
+      for (let i = 0; i < count; i += 1) {
+        const nested = parseParameterSetAt(cursor, depth + 1);
+        if (!nested) {
+          break;
+        }
+        list.push(nested);
+        cursor = nested.nextOffset;
+      }
+      value = {
+        count,
+        countRaw,
+        sets: list,
+      };
+    } else if (type === 0x8002) {
+      if (cursor + 2 > payload.length) return null;
+      value = {
+        binDataId: dv.getUint16(cursor, true),
+      };
+      cursor += 2;
+    } else {
+      // Keep unknown payload parse-safe by consuming a DWORD when possible.
+      if (cursor + 4 <= payload.length) {
+        value = {
+          raw32: dv.getUint32(cursor, true),
+        };
+        cursor += 4;
+      } else {
+        value = {
+          raw: payload.length - cursor,
+        };
+        cursor = payload.length;
+      }
+    }
+
+    return {
+      nextOffset: cursor,
+      item: {
+        itemId,
+        type,
+        value,
+      },
+    };
+  };
+
+  const root = parseParameterSetAt(0, 0);
+  if (!root) {
+    return null;
+  }
+
+  return {
+    root,
+    consumed: root.nextOffset,
+    complete: root.nextOffset <= payload.length,
+  };
+}
+
 function decodeAdvancedTagInfo(tag, payload) {
   if (!payload?.length) {
     return null;
+  }
+
+  if (tag === 20) {
+    const parsed = parseDocBorderFill(payload, 0);
+    const fill = parsed.fill ?? null;
+    const borderSummary = (parsed.borderLines ?? [])
+      .map((line) => `${line.side}:${line.typeName ?? "-"}:${line.widthMm ?? "-"}mm:${line.color?.hex ?? "-"}`)
+      .join(" | ");
+    return {
+      title: `${RECORD_TAGS[tag] || "BORDER_FILL"} (${tag})`,
+      text: [
+        `property=${parsed.property != null ? `0x${parsed.property.toString(16)}` : "-"}`,
+        `fillType=${parsed.fillType != null ? `0x${parsed.fillType.toString(16)}` : "-"}`,
+        `solidFill=${fill?.colorFill?.backgroundColor?.hex ?? "-"}`,
+        `gradientColors=${fill?.gradientFill?.colors?.length ?? 0}`,
+        `imageBinDataId=${fill?.imageFill?.binDataId ?? "-"}`,
+        `borders=${borderSummary || "-"}`,
+      ].join("\n"),
+    };
+  }
+
+  if (tag === 70) {
+    const ranges = parseParaRangeTag(payload);
+    const sample = ranges
+      .slice(0, 8)
+      .map((item) => `[${item.start},${item.end}) type=${item.tagType} data=0x${item.tagData.toString(16)}`)
+      .join(" | ");
+    return {
+      title: `${RECORD_TAGS[tag] || "PARA_RANGE_TAG"} (${tag})`,
+      text: [`count=${ranges.length}`, `sample=${sample || "-"}`].join("\n"),
+    };
+  }
+
+  if (tag === 76) {
+    const shape = parseShapeComponent(payload);
+    return {
+      title: `${RECORD_TAGS[tag] || "SHAPE_COMPONENT"} (${tag})`,
+      text: [
+        `ctrlId=${shape?.objectCtrlId || "-"}`,
+        `offset=${shape?.groupOffsetX ?? "-"},${shape?.groupOffsetY ?? "-"}`,
+        `size=${shape?.currentWidth ?? "-"}x${shape?.currentHeight ?? "-"}`,
+        `rotation=${shape?.rotation ?? "-"}`,
+        `matrixPairs=${shape?.matrixPairCount ?? "-"}`,
+      ].join("\n"),
+    };
+  }
+
+  if (tag === 87) {
+    const parsed = parseCtrlData(payload);
+    const setId = parsed?.root?.setId;
+    const itemCount = parsed?.root?.itemCount;
+    const sampleItems = (parsed?.root?.items ?? [])
+      .slice(0, 8)
+      .map((item) => {
+        if (typeof item?.value === "string") {
+          return `id=${item.itemId}:type=${item.type}:\"${item.value}\"`;
+        }
+        if (item?.value == null) {
+          return `id=${item?.itemId}:type=${item?.type}:null`;
+        }
+        if (typeof item.value === "number") {
+          return `id=${item.itemId}:type=${item.type}:${item.value}`;
+        }
+        if (item.type === 0x8002) {
+          return `id=${item.itemId}:type=bindata:${item.value?.binDataId ?? "-"}`;
+        }
+        return `id=${item.itemId}:type=${item.type}:obj`;
+      })
+      .join(" | ");
+    return {
+      title: `${RECORD_TAGS[tag] || "CTRL_DATA"} (${tag})`,
+      text: [
+        `setId=${setId ?? "-"}`,
+        `itemCount=${itemCount ?? "-"}`,
+        `consumed=${parsed?.consumed ?? "-"}/${payload.length}`,
+        `items=${sampleItems || "-"}`,
+      ].join("\n"),
+    };
   }
 
   if (tag === 32 || tag === 96) {

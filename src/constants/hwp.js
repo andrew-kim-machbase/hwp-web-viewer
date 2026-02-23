@@ -245,6 +245,51 @@ export const TAB_LEADER_NAMES = {
   4: "underline",
 };
 
+export const BORDER_LINE_TYPE_NAMES = {
+  0: "solid",
+  1: "long-dash",
+  2: "dot",
+  3: "dash-dot",
+  4: "dash-dot-dot",
+  5: "long-dash-alt",
+  6: "circle-dot",
+  7: "double",
+  8: "slim-thick",
+  9: "thick-slim",
+  10: "slim-thick-slim",
+  11: "wave",
+  12: "double-wave",
+  13: "thick-3d",
+  14: "thick-3d-reverse",
+  15: "solid-3d",
+  16: "solid-3d-reverse",
+};
+
+export const BORDER_DIAGONAL_TYPE_NAMES = {
+  0: "slash",
+  1: "backslash",
+  2: "crooked-slash",
+};
+
+export const BORDER_LINE_WIDTH_MM = {
+  0: 0.1,
+  1: 0.12,
+  2: 0.15,
+  3: 0.2,
+  4: 0.25,
+  5: 0.3,
+  6: 0.4,
+  7: 0.5,
+  8: 0.6,
+  9: 0.7,
+  10: 1.0,
+  11: 1.5,
+  12: 2.0,
+  13: 3.0,
+  14: 4.0,
+  15: 5.0,
+};
+
 export const BIN_STORAGE_TYPE_NAMES = {
   0: "link",
   1: "embedding",
