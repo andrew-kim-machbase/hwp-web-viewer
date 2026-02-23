@@ -10,6 +10,73 @@ const DEFAULT_CASES = [
   { name: "5.0", hwp: "5.0.hwp", pdf: "5.0.pdf" },
 ];
 
+function parseCaseToken(rawValue) {
+  const value = String(rawValue ?? "");
+  const first = value.indexOf(":");
+  if (first <= 0) {
+    return null;
+  }
+  const second = value.indexOf(":", first + 1);
+  if (second <= first + 1 || second >= value.length - 1) {
+    return null;
+  }
+  const name = value.slice(0, first).trim();
+  const hwp = value.slice(first + 1, second).trim();
+  const pdf = value.slice(second + 1).trim();
+  if (!name || !hwp || !pdf) {
+    return null;
+  }
+  return { name, hwp, pdf };
+}
+
+function discoverCasesFromDir(dirPath, includeHwpx = false) {
+  const targetDir = path.resolve(dirPath);
+  const entries = fs.readdirSync(targetDir, { withFileTypes: true });
+  const pairMap = new Map();
+  for (const entry of entries) {
+    if (!entry.isFile()) {
+      continue;
+    }
+    const match = entry.name.match(/^(.*)\.(hwp|hwpx|pdf)$/i);
+    if (!match) {
+      continue;
+    }
+    const base = match[1];
+    const ext = match[2].toLowerCase();
+    if (!pairMap.has(base)) {
+      pairMap.set(base, {});
+    }
+    pairMap.get(base)[ext] = entry.name;
+  }
+
+  const cases = [];
+  for (const [base, value] of pairMap.entries()) {
+    if (!value.pdf) {
+      continue;
+    }
+    const source = value.hwp || (includeHwpx ? value.hwpx : null);
+    if (!source) {
+      continue;
+    }
+    cases.push({
+      name: base,
+      hwp: path.join(targetDir, source),
+      pdf: path.join(targetDir, value.pdf),
+    });
+  }
+  cases.sort((a, b) => a.name.localeCompare(b.name, "ko"));
+  return cases;
+}
+
+function sanitizeCaseDirName(name, index) {
+  const fallback = `case-${String(index + 1).padStart(2, "0")}`;
+  const value = String(name ?? "").trim();
+  if (!value) {
+    return fallback;
+  }
+  return value.replace(/[\\/]/g, "_") || fallback;
+}
+
 function parseArgs(argv) {
   const args = {
     url: "http://127.0.0.1:4173",
@@ -17,9 +84,13 @@ function parseArgs(argv) {
     artifactsDir: "artifacts/diff",
     python: ".venv/bin/python",
     cases: DEFAULT_CASES,
+    docsDir: null,
+    caseLimit: null,
+    includeHwpx: false,
     saveRendered: false,
     reuseServer: false,
   };
+  const explicitCases = [];
 
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
@@ -31,16 +102,37 @@ function parseArgs(argv) {
       args.artifactsDir = argv[++i];
     } else if (token === "--python" && argv[i + 1]) {
       args.python = argv[++i];
-    } else if (token === "--case" && argv[i + 1]) {
-      const [name, hwp, pdf] = String(argv[++i]).split(":");
-      if (name && hwp && pdf) {
-        args.cases = [{ name, hwp, pdf }];
+    } else if (token === "--docs-dir" && argv[i + 1]) {
+      args.docsDir = argv[++i];
+    } else if (token === "--case-limit" && argv[i + 1]) {
+      const parsed = Number.parseInt(argv[++i], 10);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        args.caseLimit = parsed;
       }
+    } else if (token === "--case" && argv[i + 1]) {
+      const caseItem = parseCaseToken(argv[++i]);
+      if (caseItem) {
+        explicitCases.push(caseItem);
+      }
+    } else if (token === "--include-hwpx") {
+      args.includeHwpx = true;
     } else if (token === "--save-rendered") {
       args.saveRendered = true;
     } else if (token === "--reuse-server") {
       args.reuseServer = true;
     }
+  }
+
+  if (explicitCases.length) {
+    args.cases = explicitCases;
+  } else if (args.docsDir) {
+    args.cases = discoverCasesFromDir(args.docsDir, args.includeHwpx);
+  }
+  if (args.caseLimit != null) {
+    args.cases = args.cases.slice(0, args.caseLimit);
+  }
+  if (!args.cases.length) {
+    throw new Error("No valid comparison cases were resolved.");
   }
 
   return args;
@@ -232,8 +324,18 @@ async function main() {
   const summary = [];
   try {
     await page.goto(args.url, { waitUntil: "networkidle" });
-    for (const caseItem of args.cases) {
-      const caseDir = path.join(args.artifactsDir, caseItem.name);
+    for (let index = 0; index < args.cases.length; index += 1) {
+      const caseItem = args.cases[index];
+      const hwpPath = path.resolve(caseItem.hwp);
+      const pdfPath = path.resolve(caseItem.pdf);
+      if (!fs.existsSync(hwpPath)) {
+        throw new Error(`Case "${caseItem.name}" source file not found: ${hwpPath}`);
+      }
+      if (!fs.existsSync(pdfPath)) {
+        throw new Error(`Case "${caseItem.name}" reference PDF not found: ${pdfPath}`);
+      }
+
+      const caseDir = path.join(args.artifactsDir, sanitizeCaseDirName(caseItem.name, index));
       const previewDir = path.join(caseDir, "preview");
       const reportPath = path.join(caseDir, "report.json");
       ensureDir(caseDir);
@@ -248,7 +350,7 @@ async function main() {
       const report = runPdfComparison({
         python: args.python,
         previewDir,
-        pdfPath: caseItem.pdf,
+        pdfPath,
         outJson: reportPath,
         maxPages: args.maxPages,
         saveRendered: args.saveRendered,
@@ -256,8 +358,8 @@ async function main() {
 
       summary.push({
         name: caseItem.name,
-        hwp: caseItem.hwp,
-        pdf: caseItem.pdf,
+        hwp: hwpPath,
+        pdf: pdfPath,
         renderedPages: capture.renderedPages,
         capturedPages: capture.capturedPages,
         comparedPages: report.pages_compared,

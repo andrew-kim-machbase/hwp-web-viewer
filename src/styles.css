@@ -461,9 +461,10 @@ body {
 
 .preview-sheet-doc {
   background: #fff;
-  border-color: rgba(12, 28, 27, 0.18);
-  box-shadow: 0 14px 30px rgba(11, 31, 29, 0.08);
-  padding: 1.1rem 1.2rem;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
 }
 
 .preview-flow {
@@ -745,6 +746,7 @@ body {
   margin-top: 0;
   border-color: rgba(16, 56, 53, 0.28);
   background: #fff;
+  border-radius: 0;
 }
 
 .control-table-meta {
@@ -820,6 +822,15 @@ body {
   line-height: 1.38;
   color: #0f2423;
   word-break: keep-all;
+}
+
+.control-table-cell-paragraph {
+  white-space: pre-wrap;
+  word-break: keep-all;
+}
+
+.control-table-cell-paragraph:last-child {
+  margin-bottom: 0 !important;
 }
 
 .doc-table-wrap .control-table-cell-text {

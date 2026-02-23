@@ -305,7 +305,7 @@ function computeControlRenderHints(controls) {
     const { height } = resolveGraphicObjectDimensions(control.graphicInfo);
     const allowOffsetLayout = !object.propertyBits?.likeCharacter;
     const flow = object.propertyBits?.textFlow;
-    const isOverlayFlow = flow === 2 || flow === 3;
+    const isOverlayFlow = flow === 4 || flow === 5;
     const hasAbsoluteAnchor =
       object.propertyBits?.vertRelToName &&
       object.propertyBits?.horzRelToName &&
@@ -362,7 +362,7 @@ function renderPreviewControlBlock(control, renderHint = null) {
         } else {
           inlineStyles.push(`left:${renderHint.absoluteXPx.toFixed(1)}px`);
         }
-        inlineStyles.push(`z-index:${renderHint.absoluteFlow === 2 ? 0 : 3}`);
+        inlineStyles.push(`z-index:${renderHint.absoluteFlow === 4 ? 0 : 3}`);
         inlineStyles.push("margin-top:0");
       } else {
         if (renderHint?.topGapPx >= 0.2) {
@@ -879,10 +879,12 @@ function estimateLineHeightPx(segment, baseStyle) {
   if (segment) {
     const minHeightUnit = segment.textHeight > 0 ? segment.textHeight : segment.lineHeight;
     if (Number.isFinite(minHeightUnit) && minHeightUnit > 0) {
-      result = Math.max(result, clamp(hwpToPx(minHeightUnit), 10, 200));
+      result = Math.max(result, clamp(hwpToPx(minHeightUnit), 10, 120));
     }
     if (Number.isFinite(segment.lineSpaceBelow) && segment.lineSpaceBelow > 0) {
-      result += clamp(hwpToPx(segment.lineSpaceBelow), 0, 72);
+      // `lineHeight/textHeight` already captures most vertical extent for pagination.
+      // Add only a small fraction of lineSpaceBelow to avoid compounding split estimates.
+      result += clamp(hwpToPx(segment.lineSpaceBelow) * 0.22, 0, 14);
     }
   }
 
@@ -902,7 +904,7 @@ function buildLineInlineCss(segment, baseHoriz, baseStyle) {
 
   const minHeightUnit = segment.textHeight > 0 ? segment.textHeight : segment.lineHeight;
   if (Number.isFinite(minHeightUnit) && minHeightUnit > 0) {
-    const minHeightPx = clamp(hwpToPx(minHeightUnit), Math.max(10, baseStyle.fontSizePt * 0.9), 180);
+    const minHeightPx = clamp(hwpToPx(minHeightUnit), Math.max(10, baseStyle.fontSizePt * 0.9), 140);
     styles.push(`min-height:${minHeightPx.toFixed(1)}px`);
   }
 
@@ -1094,9 +1096,9 @@ function computeTableDensityPageScale(tableParagraphRatio) {
   }
   const pivot = 0.22;
   if (tableParagraphRatio >= pivot) {
-    return clamp(1 + (tableParagraphRatio - pivot) * 0.32, 0.96, 1.05);
+    return clamp(1 + (tableParagraphRatio - pivot) * 1.15, 0.98, 1.3);
   }
-  return clamp(1 - (pivot - tableParagraphRatio) * 0.8, 0.96, 1.05);
+  return clamp(1 - (pivot - tableParagraphRatio) * 0.45, 0.9, 1.02);
 }
 
 function paginatePageParagraphsByHeight(paragraphs, contentHeightPx) {
@@ -1171,6 +1173,20 @@ function appendControlOnlyParagraphWithOverflow(state, paragraph) {
 
   if (controls.length === 1 && controls[0].tableInfo) {
     appendTableControlParagraphWithOverflow(state, paragraph, controls[0]);
+    return;
+  }
+
+  // Keep non-table control-only paragraphs grouped to avoid inflating page count.
+  if (!controls.some((control) => Boolean(control?.tableInfo))) {
+    const estimatedHeight = estimateParagraphHeightPx(paragraph);
+    if (
+      estimatedHeight > 0 &&
+      state.current.paragraphs.length &&
+      state.current.usedHeightPx + estimatedHeight > state.contentHeightPx - PAGE_CONTENT_BOTTOM_GUARD_PX
+    ) {
+      startNewPaginationPage(state);
+    }
+    addPaginationParagraph(state, paragraph, estimatedHeight);
     return;
   }
 
@@ -1271,10 +1287,19 @@ function cloneParagraphWithControls(paragraph, controls, breakHints = paragraph.
 function estimateParagraphHeightPx(paragraph) {
   const textHeight = estimateParagraphTextHeightPx(paragraph);
   const controls = paragraph?.controls ?? [];
+  const hasTableControl = controls.some((control) => Boolean(control?.tableInfo));
+  let adjustedTextHeight = textHeight;
+  if (controls.length === 0) {
+    adjustedTextHeight *= 0.84;
+  } else if (hasTableControl) {
+    adjustedTextHeight *= 1.12;
+  } else {
+    adjustedTextHeight *= 0.92;
+  }
   const controlsHeight = controls.reduce((sum, control) => sum + estimateControlHeightPx(control), 0);
   const stackGap = controls.length > 1 ? (controls.length - 1) * 4 : 0;
-  const stackTopGap = controls.length && textHeight > 0 ? 6 : 0;
-  const total = textHeight + stackTopGap + stackGap + controlsHeight;
+  const stackTopGap = controls.length && adjustedTextHeight > 0 ? 6 : 0;
+  const total = adjustedTextHeight + stackTopGap + stackGap + controlsHeight;
   return clamp(total, 0, 3600);
 }
 
@@ -1337,7 +1362,7 @@ function isAbsoluteOverlayGraphic(control) {
   }
   const bits = control.graphicInfo.objectCommon.propertyBits;
   const flow = bits.textFlow;
-  if (!(flow === 2 || flow === 3) || bits.likeCharacter) {
+  if (!(flow === 4 || flow === 5) || bits.likeCharacter) {
     return false;
   }
   const vRel = bits.vertRelToName;
@@ -1350,7 +1375,7 @@ function estimateTableHeightPx(tableInfo) {
   if (!rowHeights.length) {
     return 0;
   }
-  return clamp(TABLE_CHUNK_BASE_PX + rowHeights.reduce((sum, value) => sum + value, 0), 16, 6400);
+  return clamp(TABLE_CHUNK_BASE_PX * 0.5 + rowHeights.reduce((sum, value) => sum + value, 0), 12, 5200);
 }
 
 function estimateTableRowHeightsPx(tableInfo) {
@@ -1362,13 +1387,13 @@ function estimateTableRowHeightsPx(tableInfo) {
   const rowSizes = Array.isArray(tableInfo?.rowSizes) ? tableInfo.rowSizes : [];
   const sizedRows = rowSizes.reduce((sum, rowSize) => sum + (Number.isFinite(rowSize) && rowSize > 0 ? 1 : 0), 0);
   const rowSizeCoverage = rowCount > 0 ? sizedRows / rowCount : 0;
-  const rowSizeScale = rowSizeCoverage >= 0.7 ? 0.88 : rowSizeCoverage >= 0.45 ? 0.93 : 1.0;
-  const inferredLinePx = rowSizeCoverage <= 0.25 ? 15.5 : 14.0;
-  const fallbackRowPx = rowSizeCoverage <= 0.25 ? 25 : TABLE_ROW_FALLBACK_PX;
+  const rowSizeScale = rowSizeCoverage >= 0.7 ? 0.9 : rowSizeCoverage >= 0.45 ? 0.95 : 1.0;
+  const inferredLinePx = rowSizeCoverage <= 0.25 ? 14.0 : 12.8;
+  const fallbackRowPx = rowSizeCoverage <= 0.25 ? 24 : Math.max(TABLE_ROW_MIN_PX, TABLE_ROW_FALLBACK_PX * 0.88);
   for (let i = 0; i < rowCount; i += 1) {
     const rowSize = rowSizes[i];
     if (Number.isFinite(rowSize) && rowSize > 0) {
-      rowHeights[i] = Math.max(rowHeights[i], clamp(hwpToPx(rowSize) * rowSizeScale, TABLE_ROW_MIN_PX, 360));
+      rowHeights[i] = Math.max(rowHeights[i], clamp(hwpToPx(rowSize) * rowSizeScale, TABLE_ROW_MIN_PX, 300));
     }
   }
 
@@ -1389,7 +1414,7 @@ function estimateTableRowHeightsPx(tableInfo) {
     if (!(cellHeightPx > 0)) {
       continue;
     }
-    const perRow = clamp((cellHeightPx / rowSpan) * rowSizeScale, TABLE_ROW_MIN_PX, 320);
+    const perRow = clamp((cellHeightPx / rowSpan) * rowSizeScale, TABLE_ROW_MIN_PX, 260);
     const rowEnd = Math.min(rowCount, cell.row + rowSpan);
     for (let row = cell.row; row < rowEnd; row += 1) {
       rowHeights[row] = Math.max(rowHeights[row], perRow);
@@ -1540,7 +1565,7 @@ function buildPreviewModel() {
   if (!doc) {
     return null;
   }
-  if (doc.formatInfo?.mode === "legacy-3x-binary" || doc.formatInfo?.mode === "hwpml-xml") {
+  if (doc.formatInfo?.mode === "hwpml-xml") {
     return {
       sectionCount: 0,
       controlCount: 0,
@@ -1553,7 +1578,7 @@ function buildPreviewModel() {
     return doc.previewModel;
   }
 
-  const sectionStreams = getPreviewSectionStreams(doc.entries, doc.fileHeader);
+  const sectionStreams = getPreviewSectionStreams(doc.entries, doc.fileHeader, doc.formatInfo?.mode || "unknown");
   const paragraphs = [];
   const numberingState = new Map();
   let pageLayout = null;
@@ -1561,9 +1586,11 @@ function buildPreviewModel() {
 
   for (const stream of sectionStreams) {
     const analysis = getStreamAnalysis(stream);
+    const sectionBreakProfile = buildSectionBreakHintProfile(analysis);
     let previousTopLevelLineY = null;
     let currentPageLayout = pageLayout;
     let currentColumnLayout = columnLayout;
+    let sectionParagraphIndex = 0;
     for (const paragraph of analysis.paragraphs) {
       const header = paragraph.headerRecord
         ? parseParaHeader(getRecordPayload(analysis.decoded, paragraph.headerRecord))
@@ -1611,6 +1638,25 @@ function buildPreviewModel() {
       const firstLineY = lineSegments.length ? lineSegments[0].lineVerticalPos : null;
       const headerLevel = paragraph.headerRecord?.level ?? 0;
       const canUseYPageHeuristic = headerLevel <= 1;
+      const splitType = header?.splitType ?? 0;
+      const explicitHeaderPageBreak = Boolean((splitType & PARA_SPLIT_PAGE_BIT) || (splitType & PARA_SPLIT_SECTION_BIT));
+      if (
+        sectionBreakProfile.useHeaderPageBreakHints &&
+        explicitHeaderPageBreak &&
+        sectionParagraphIndex > 0
+      ) {
+        breakHints.pageStart = true;
+      }
+      if (
+        breakHints.pageStart &&
+        canUseYPageHeuristic &&
+        !explicitHeaderPageBreak &&
+        Number.isFinite(firstLineY) &&
+        Number.isFinite(previousTopLevelLineY) &&
+        !(firstLineY + PAGE_Y_RESET_THRESHOLD < previousTopLevelLineY)
+      ) {
+        breakHints.pageStart = false;
+      }
       if (
         !breakHints.pageStart &&
         canUseYPageHeuristic &&
@@ -1664,6 +1710,7 @@ function buildPreviewModel() {
         },
         style: previewStyle,
       });
+      sectionParagraphIndex += 1;
     }
   }
 
@@ -1679,12 +1726,42 @@ function buildPreviewModel() {
   return model;
 }
 
+function buildSectionBreakHintProfile(analysis) {
+  let paragraphCount = 0;
+  let headerPageBreakCount = 0;
+
+  for (const paragraph of analysis?.paragraphs ?? []) {
+    if (!paragraph?.headerRecord) {
+      continue;
+    }
+    const payload = getRecordPayload(analysis.decoded, paragraph.headerRecord);
+    if (!payload || payload.length < 12) {
+      continue;
+    }
+    paragraphCount += 1;
+    const splitType = payload[11];
+    if ((splitType & PARA_SPLIT_PAGE_BIT) || (splitType & PARA_SPLIT_SECTION_BIT)) {
+      headerPageBreakCount += 1;
+    }
+  }
+
+  const ratio = paragraphCount > 0 ? headerPageBreakCount / paragraphCount : 0;
+  const useHeaderPageBreakHints = paragraphCount >= 120 && ratio >= 0.02 && ratio <= 0.25;
+
+  return {
+    paragraphCount,
+    headerPageBreakCount,
+    ratio,
+    useHeaderPageBreakHints,
+  };
+}
+
 function extractParagraphBreakHints(lineSegments, paraHeader = null) {
   if (!lineSegments?.length) {
     const splitType = paraHeader?.splitType ?? 0;
     return {
-      pageStart: Boolean((splitType & PARA_SPLIT_PAGE_BIT) || (splitType & PARA_SPLIT_SECTION_BIT)),
-      columnStart: Boolean((splitType & PARA_SPLIT_COLUMN_BIT) || (splitType & PARA_SPLIT_COLUMNS_DEF_BIT)),
+      pageStart: Boolean(splitType & PARA_SPLIT_SECTION_BIT),
+      columnStart: Boolean(splitType & PARA_SPLIT_COLUMNS_DEF_BIT),
     };
   }
 
@@ -1698,14 +1775,12 @@ function extractParagraphBreakHints(lineSegments, paraHeader = null) {
     };
   }
 
-  const hasPageFirst = sorted.some((segment) => Boolean((segment.flags ?? 0) & LINE_SEG_PAGE_FIRST_BIT));
-  const hasColumnFirst = sorted.some((segment) => Boolean((segment.flags ?? 0) & LINE_SEG_COLUMN_FIRST_BIT));
-  const splitType = paraHeader?.splitType ?? 0;
-  const headerPageBreak = Boolean((splitType & PARA_SPLIT_PAGE_BIT) || (splitType & PARA_SPLIT_SECTION_BIT));
-  const headerColumnBreak = Boolean((splitType & PARA_SPLIT_COLUMN_BIT) || (splitType & PARA_SPLIT_COLUMNS_DEF_BIT));
+  // Some documents set line-segment break bits too aggressively; rely on Y-reset heuristic in buildPreviewModel.
+  const hasPageFirst = false;
+  const hasColumnFirst = false;
   return {
-    pageStart: hasPageFirst || headerPageBreak,
-    columnStart: hasColumnFirst || headerColumnBreak,
+    pageStart: hasPageFirst,
+    columnStart: hasColumnFirst,
   };
 }
 
@@ -2086,20 +2161,20 @@ function getRecordTagName(tag) {
 }
 
 function parseListHeader(payload) {
-  if (!payload || payload.length < 8) {
+  if (!payload || payload.length < 6) {
     return null;
   }
   const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-  const paragraphCount = dv.getUint16(0, true);
-  const unknown1 = dv.getUint16(2, true);
-  const property = dv.getUint32(4, true);
+  const paragraphCountRaw = dv.getInt16(0, true);
+  const paragraphCount = Math.max(0, paragraphCountRaw);
+  const property = dv.getUint32(2, true);
   const textDirection = property & 0x7;
   const lineBreak = (property >>> 3) & 0x3;
   const verticalAlign = (property >>> 5) & 0x3;
 
   const result = {
     paragraphCount,
-    unknown1,
+    paragraphCountRaw,
     property,
     textDirection,
     lineBreak,
@@ -2111,20 +2186,23 @@ function parseListHeader(payload) {
     cell: null,
   };
 
-  if (payload.length >= 34) {
-    const col = dv.getUint16(8, true);
-    const row = dv.getUint16(10, true);
-    const colSpanRaw = dv.getUint16(12, true);
-    const rowSpanRaw = dv.getUint16(14, true);
-    const width = dv.getInt32(16, true);
-    const height = dv.getInt32(20, true);
+  const tryParseCellAt = (baseOffset) => {
+    if (payload.length < baseOffset + 26) {
+      return null;
+    }
+    const col = dv.getUint16(baseOffset, true);
+    const row = dv.getUint16(baseOffset + 2, true);
+    const colSpanRaw = dv.getUint16(baseOffset + 4, true);
+    const rowSpanRaw = dv.getUint16(baseOffset + 6, true);
+    const width = dv.getInt32(baseOffset + 8, true);
+    const height = dv.getInt32(baseOffset + 12, true);
     const margin = [
-      dv.getInt16(24, true),
-      dv.getInt16(26, true),
-      dv.getInt16(28, true),
-      dv.getInt16(30, true),
+      dv.getInt16(baseOffset + 16, true),
+      dv.getInt16(baseOffset + 18, true),
+      dv.getInt16(baseOffset + 20, true),
+      dv.getInt16(baseOffset + 22, true),
     ];
-    const borderFillId = dv.getUint16(32, true);
+    const borderFillId = dv.getUint16(baseOffset + 24, true);
     const colSpan = colSpanRaw > 0 ? colSpanRaw : 1;
     const rowSpan = rowSpanRaw > 0 ? rowSpanRaw : 1;
     if (
@@ -2137,8 +2215,8 @@ function parseListHeader(payload) {
       Math.abs(width) < 100000000 &&
       Math.abs(height) < 100000000
     ) {
-      result.cell = {
-        paragraphCount: Math.max(0, paragraphCount),
+      return {
+        paragraphCount,
         listProperty: property,
         col,
         row,
@@ -2150,7 +2228,16 @@ function parseListHeader(payload) {
         borderFillId,
       };
     }
+    return null;
   };
+
+  // Spec 5.0 table layout: LIST_HEADER(6B) + cell payload(26B)
+  result.cell = tryParseCellAt(6);
+  if (!result.cell && payload.length >= 34) {
+    // Compatibility fallback for non-standard variants.
+    result.cell = tryParseCellAt(8);
+  }
+
   return result;
 }
 
@@ -2805,11 +2892,20 @@ function renderTableControlPreview(tableInfo, splitInfo = null) {
           ]
             .filter(Boolean)
             .join(" ");
+          const cellStyle = resolveTableCellInlineStyle(cell, tableInfo);
+          const styleAttr = cellStyle ? `style="${escapeHtmlAttr(cellStyle)}"` : "";
           const cellText = cell.text ? textToHtml(cell.text.slice(0, 1024)) : "";
+          const blockHtml = renderTableCellTextBlocks(cell.textBlocks ?? []);
           if (!PREVIEW_DEBUG) {
             return `
-              <td class="control-table-cell" ${spanAttrs}>
-                ${cellText ? `<div class="control-table-cell-text">${cellText}</div>` : "&nbsp;"}
+              <td class="control-table-cell" ${spanAttrs} ${styleAttr}>
+                ${
+                  blockHtml
+                    ? `<div class="control-table-cell-text">${blockHtml}</div>`
+                    : cellText
+                      ? `<div class="control-table-cell-text">${cellText}</div>`
+                      : "&nbsp;"
+                }
               </td>
             `;
           }
@@ -2820,7 +2916,7 @@ function renderTableControlPreview(tableInfo, splitInfo = null) {
           const paraLabel = `p ${cell.paragraphCount}`;
 
           return `
-            <td class="control-table-cell" ${spanAttrs}>
+            <td class="control-table-cell" ${spanAttrs} ${styleAttr}>
               <div class="control-table-cell-pos">R${cell.row + 1}C${cell.col + 1}</div>
               <div class="control-table-cell-meta">${escapeHtml(`${spanLabel} · ${widthLabel} · ${heightLabel} · ${paraLabel}`)}</div>
               ${cellText ? `<div class="control-table-cell-text">${cellText}</div>` : ""}
@@ -2861,6 +2957,96 @@ function renderTableControlPreview(tableInfo, splitInfo = null) {
       </table>
     </div>
   `;
+}
+
+function resolveTableCellInlineStyle(cell, tableInfo, docInfo = state.doc?.docInfo ?? null) {
+  if (!cell || !docInfo?.borderFillById) {
+    return "";
+  }
+  const borderFill = resolveTableCellBorderFill(cell, tableInfo, docInfo);
+  if (!borderFill) {
+    return "";
+  }
+  const fill = borderFill.fillColor;
+  if (!fill || fill.auto) {
+    return "";
+  }
+  const hex = String(fill.hex || "").toLowerCase();
+  if (!hex || hex === "#ffffff") {
+    return "";
+  }
+  return `background:${hex}`;
+}
+
+function resolveTableCellBorderFill(cell, tableInfo, docInfo) {
+  const byId = docInfo?.borderFillById;
+  if (!byId) {
+    return null;
+  }
+  const candidates = [cell.borderFillId, tableInfo?.borderFillId].filter((value) => Number.isFinite(value) && value > 0);
+  for (const id of candidates) {
+    const item = byId.get(id);
+    if (item) {
+      return item;
+    }
+  }
+  return null;
+}
+
+function renderTableCellTextBlocks(blocks) {
+  if (!blocks?.length) {
+    return "";
+  }
+
+  return blocks
+    .map((block) => {
+      const rawText = normalizeDisplayText(block?.text ?? "");
+      if (!rawText) {
+        return "";
+      }
+      const marginBottomPx = clamp(block?.style?.spacingAfterPx ?? 0, 0, 12);
+      const blockColor = resolveTableBlockColor(block);
+      const styleParts = [`margin:0 0 ${marginBottomPx.toFixed(1)}px 0`];
+      if (blockColor) {
+        styleParts.push(`color:${blockColor}`);
+      }
+      const cssText = styleParts.join(";");
+      const textHtml = textToHtml(rawText);
+      return `<p class="control-table-cell-paragraph" style="${escapeHtmlAttr(cssText)}">${textHtml}</p>`;
+    })
+    .filter(Boolean)
+    .join("");
+}
+
+function resolveTableBlockColor(block) {
+  if (!block) {
+    return "";
+  }
+  const defaultColor = "#0f2423";
+  const runColor = (block.textRuns ?? []).reduce((found, run) => {
+    if (found) {
+      return found;
+    }
+    const css = run?.css || "";
+    const match = css.match(/(?:^|;)\\s*color\\s*:\\s*([^;]+)/i);
+    if (!match) {
+      return "";
+    }
+    const color = match[1].trim().toLowerCase();
+    if (!color || color === "#111111" || color === defaultColor) {
+      return "";
+    }
+    return color;
+  }, "");
+  if (runColor) {
+    return runColor;
+  }
+
+  const styleColor = String(block?.style?.color || "").trim().toLowerCase();
+  if (!styleColor || styleColor === "#111111" || styleColor === defaultColor) {
+    return "";
+  }
+  return styleColor;
 }
 
 function buildTableGrid(rowCount, colCount, cells) {
@@ -3239,8 +3425,8 @@ function normalizeTableCellAddresses(cells, rows, cols) {
 }
 
 function attachTableCellTexts(tableInfo, descendants, decoded) {
-  const paragraphs = extractTableParagraphTexts(descendants, decoded);
-  const fallbackParagraphs = paragraphs.length ? paragraphs : extractControlParagraphTexts(descendants, decoded);
+  const paragraphs = extractTableParagraphBlocks(descendants, decoded);
+  const fallbackParagraphs = paragraphs.length ? paragraphs : extractControlParagraphBlocks(descendants, decoded);
   const pool = fallbackParagraphs;
   let cursor = 0;
   const cells = tableInfo.cells.map((cell) => {
@@ -3248,12 +3434,13 @@ function attachTableCellTexts(tableInfo, descendants, decoded) {
     const selected = pool.slice(cursor, cursor + paragraphCount);
     cursor += paragraphCount;
     const text = selected
-      .map((value) => normalizePreviewText(value))
+      .map((value) => normalizePreviewText(value?.text ?? ""))
       .filter((value) => value.length > 0)
       .join("\n");
     return {
       ...cell,
       text,
+      textBlocks: selected,
     };
   });
 
@@ -3265,13 +3452,17 @@ function attachTableCellTexts(tableInfo, descendants, decoded) {
   };
 }
 
-function extractTableParagraphTexts(descendants, decoded) {
+function extractTableParagraphBlocks(descendants, decoded, doc = state.doc) {
   const tableIndex = descendants.findIndex((record) => record.tag === 77);
   const records = tableIndex >= 0 ? descendants.slice(tableIndex + 1) : descendants;
   if (!records.length) {
     return [];
   }
-  return extractControlParagraphTexts(records, decoded);
+  return extractControlParagraphBlocks(records, decoded, doc);
+}
+
+function extractTableParagraphTexts(descendants, decoded) {
+  return extractTableParagraphBlocks(descendants, decoded).map((paragraph) => paragraph.text ?? "");
 }
 
 function extractControlParagraphBlocks(descendants, decoded, doc = state.doc) {
@@ -3359,7 +3550,7 @@ function extractControlParagraphTexts(descendants, decoded, doc = state.doc) {
   return extractControlParagraphBlocks(descendants, decoded, doc).map((paragraph) => paragraph.text ?? "");
 }
 
-function getPreviewSectionStreams(entries, fileHeader = null) {
+function getPreviewSectionStreams(entries, fileHeader = null, formatMode = "unknown") {
   const useViewText = Boolean(fileHeader?.distributable);
   const pick = (pattern) =>
     entries
@@ -3372,7 +3563,35 @@ function getPreviewSectionStreams(entries, fileHeader = null) {
       return view;
     }
   }
-  return pick(/\/BodyText\/Section\d+$/);
+  const body = pick(/\/BodyText\/Section\d+$/);
+  if (body.length) {
+    return body;
+  }
+
+  if (formatMode === "legacy-3x-binary") {
+    const legacyRaw = entries.find((entry) => entry.type === 2 && entry.fullPath === "Legacy3/RawData");
+    if (legacyRaw) {
+      return [legacyRaw];
+    }
+
+    const fallback = entries.filter((entry) => {
+      if (entry.type !== 2 || !entry.size) {
+        return false;
+      }
+      if (/\/FileHeader$|\/DocInfo$|\/PrvImage$|\/PrvText$/i.test(entry.fullPath)) {
+        return false;
+      }
+      if (/\/BinData\//i.test(entry.fullPath) || /\/Scripts\//i.test(entry.fullPath)) {
+        return false;
+      }
+      return true;
+    });
+    if (fallback.length) {
+      return fallback.sort((a, b) => b.size - a.size);
+    }
+  }
+
+  return [];
 }
 
 function getSectionNumber(path) {
@@ -3384,11 +3603,11 @@ function getSectionNumber(path) {
 }
 
 function toSectionLabel(path) {
-  const sectionNumber = getSectionNumber(path);
-  if (!Number.isFinite(sectionNumber)) {
+  const match = path.match(/Section(\d+)$/);
+  if (!match) {
     return path;
   }
-  return `Section${sectionNumber}`;
+  return `Section${Number(match[1])}`;
 }
 
 function resolvePreviewStyle(paraShape, charShape) {
@@ -3897,6 +4116,7 @@ function parseDocInfo(rawBytes, compressedFlag) {
     idMappings: parsed.idMappings,
     faceNameOffsets: parsed.faceNameOffsets,
     faceNames: parsed.faceNames,
+    borderFills: parsed.borderFills,
     binDataRecords: parsed.binDataRecords,
     binDataById: parsed.binDataById,
     tabDefs: parsed.tabDefs,
@@ -3916,6 +4136,7 @@ function parseDocInfo(rawBytes, compressedFlag) {
     forbiddenCharById: parsed.forbiddenCharById,
     trackChangeById: parsed.trackChangeById,
     trackChangeAuthorById: parsed.trackChangeAuthorById,
+    borderFillById: parsed.borderFillById,
     charShapeById: parsed.charShapeById,
     paraShapeById: parsed.paraShapeById,
     styleById: parsed.styleById,
@@ -4235,6 +4456,7 @@ function decodeDocInfoStream(rawBytes, compressedFlag) {
 function parseDocInfoRecords(decoded, records) {
   let idMappings = null;
   const faceNames = [];
+  const borderFills = [];
   const binDataRecords = [];
   const tabDefs = [];
   const numberings = [];
@@ -4255,6 +4477,10 @@ function parseDocInfoRecords(decoded, records) {
     }
     if (record.tag === 19) {
       faceNames.push(parseFaceName(payload, faceNames.length));
+      continue;
+    }
+    if (record.tag === 20) {
+      borderFills.push(parseDocBorderFill(payload, borderFills.length + 1));
       continue;
     }
     if (record.tag === 18) {
@@ -4322,10 +4548,14 @@ function parseDocInfoRecords(decoded, records) {
   }
 
   const binDataById = new Map();
+  const borderFillById = new Map();
   for (const item of binDataRecords) {
     if (item.id != null) {
       binDataById.set(item.id, item);
     }
+  }
+  for (const item of borderFills) {
+    borderFillById.set(item.id, item);
   }
 
   const tabDefById = new Map();
@@ -4373,6 +4603,7 @@ function parseDocInfoRecords(decoded, records) {
     idMappings,
     faceNameOffsets,
     faceNames,
+    borderFills,
     binDataRecords,
     binDataById,
     tabDefs,
@@ -4392,6 +4623,7 @@ function parseDocInfoRecords(decoded, records) {
     forbiddenCharById,
     trackChangeById,
     trackChangeAuthorById,
+    borderFillById,
     charShapeById,
     paraShapeById,
     styleById,
@@ -4761,6 +4993,24 @@ function parseTrackChangeAuthorRecord(payload, id) {
     authorIndex,
     name,
     strings,
+    payloadSize: payload.length,
+  };
+}
+
+function parseDocBorderFill(payload, id) {
+  const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  const property = payload.length >= 2 ? dv.getUint16(0, true) : null;
+  const fillType = payload.length >= 36 ? dv.getUint32(32, true) : null;
+  const hasColorFill = payload.length >= 53 && Number.isFinite(fillType) && Boolean(fillType & 0x1);
+  const fillColor = hasColorFill && payload.length >= 40 ? parseColorRef(dv.getUint32(36, true)) : null;
+  const hatchColor = hasColorFill && payload.length >= 44 ? parseColorRef(dv.getUint32(40, true)) : null;
+
+  return {
+    id,
+    property,
+    fillType,
+    fillColor,
+    hatchColor,
     payloadSize: payload.length,
   };
 }
@@ -5221,8 +5471,12 @@ function parseParaHeader(payload) {
   }
 
   const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  const rawTextCharCount = dv.getUint32(0, true);
+  const textCharCountHighBit = (rawTextCharCount & 0x80000000) !== 0;
   const header = {
-    textCharCount: dv.getUint32(0, true),
+    textCharCount: rawTextCharCount & 0x7fffffff,
+    textCharCountRaw: rawTextCharCount >>> 0,
+    textCharCountHighBit,
     controlMask: dv.getUint32(4, true),
     paraShapeId: dv.getUint16(8, true),
     paraStyleId: dv.getUint8(10),
@@ -5470,6 +5724,10 @@ function renderParagraphHeader(header, docInfo = null) {
     `lineSegCount=${header.lineSegCount}`,
     `instanceId=${header.instanceId}`,
   ];
+
+  if (header.textCharCountHighBit) {
+    lines.push(`textCharCountRaw=0x${header.textCharCountRaw.toString(16)} (high-bit masked)`);
+  }
 
   if (header.trackChangeMerge != null) {
     lines.push(`trackChangeMerge=${header.trackChangeMerge}`);

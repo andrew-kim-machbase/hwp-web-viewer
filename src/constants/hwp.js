@@ -330,11 +330,11 @@ export const GRAPHIC_DETAIL_RECORD_TAGS = new Set([76, 78, 79, 80, 81, 82, 83, 8
 
 export const OBJECT_TEXT_FLOW_NAMES = {
   0: "square",
-  1: "block",
-  2: "behind-text",
-  3: "in-front-text",
-  4: "tight",
-  5: "through",
+  1: "tight",
+  2: "through",
+  3: "top-and-bottom",
+  4: "behind-text",
+  5: "in-front-text",
 };
 
 export const OBJECT_TEXT_SIDE_NAMES = {
