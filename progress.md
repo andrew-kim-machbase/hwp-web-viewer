@@ -105,6 +105,10 @@
     - KAMPA: `renderedPages=2`(PDF=2), `avgRms=30.3997`, `avgMae=6.2889`
   - `npm run diff:preview -- --url http://127.0.0.1:4245 --max-pages 1 --python python3 --artifacts artifacts/diff_docs_after_spec_phase1b --docs-dir docs`
     - docs 16케이스 1p 평균: `avgRms=51.3191`, `avgMae=19.2016` (기존 `after_linecap`와 동일), 페이지 수도 동일
+  - 페이지네이션 실험/원복
+    - `textLines` 높이 계산에 line-segment Y-span 혼합식을 적용하는 실험을 수행했으나, 전체 문서에서 페이지 수가 과증가(예: KAMPA `2->3`, 최종보고서 `249->264`)하여 원복.
+    - 관련 실험 산출물: `artifacts/diff_docs_after_pagination_mix/summary.json`
+    - 현재는 기존 페이지네이션 경로 유지.
 
 ### 남은 핵심 과제
 - 대용량 문서 페이지 수 오차 잔존

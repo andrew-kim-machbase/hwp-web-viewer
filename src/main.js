@@ -846,6 +846,10 @@ function buildStyledTextLines(tokens, charRuns, lineSegments, docInfo, baseStyle
       runs: buildStyledTextRuns(tokensForLine, charRuns, docInfo, baseStyle, fallbackCharShapeId),
       css: buildLineInlineCss(activeSegment, baseHoriz, baseStyle),
       estimatedHeightPx: estimateLineHeightPx(activeSegment, baseStyle),
+      lineVerticalPos: Number.isFinite(activeSegment?.lineVerticalPos) ? activeSegment.lineVerticalPos : null,
+      lineHeight: Number.isFinite(activeSegment?.lineHeight) ? activeSegment.lineHeight : null,
+      textHeight: Number.isFinite(activeSegment?.textHeight) ? activeSegment.textHeight : null,
+      lineSpaceBelow: Number.isFinite(activeSegment?.lineSpaceBelow) ? activeSegment.lineSpaceBelow : null,
       pageStart: Boolean((activeSegment?.flags ?? 0) & LINE_SEG_PAGE_FIRST_BIT),
       columnStart: Boolean((activeSegment?.flags ?? 0) & LINE_SEG_COLUMN_FIRST_BIT),
     });
